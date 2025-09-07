@@ -1,0 +1,176 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+// =======================
+// MODELS
+// =======================
+
+// User model for authentication
+model User {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  email     String   @unique
+  name      String?
+  password  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  books               BookMaster[]
+  summaryTransactions SummaryTransaction[]
+
+  @@map("users")
+}
+
+// Generic Subject Master
+model GenericSubjectMaster {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  summaryTransactions SummaryTransaction[]
+  bookGenericTags     BookGenericTag[]
+
+  @@map("generic_subject_masters")
+}
+
+// Tag Master (for specific subjects)
+model TagMaster {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  name        String   @unique
+  description String?
+  category    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  summaryTransactions SummaryTransaction[]
+  bookSpecificTags    BookSpecificTag[]
+
+  @@index([category])
+  @@map("tag_masters")
+}
+
+// Book Master
+model BookMaster {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  libraryNumber String   @unique
+  bookName      String
+  bookSummary   String?
+  pageNumbers   String?
+  grade         String?
+  remark        String?
+  edition       String?
+  publisherName String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Foreign Keys
+  userId String @db.ObjectId
+
+  // Relations
+  user                User                 @relation(fields: [userId], references: [id])
+  summaryTransactions SummaryTransaction[]
+  editors             BookEditor[]
+  genericTags         BookGenericTag[]
+  specificTags        BookSpecificTag[]
+
+  @@index([userId])
+  @@index([bookName])
+  @@index([publisherName])
+  @@index([grade])
+  @@map("book_masters")
+}
+
+// Junction table for Book and Generic Tags (Many-to-Many)
+model BookGenericTag {
+  id               String @id @default(auto()) @map("_id") @db.ObjectId
+  bookId           String @db.ObjectId
+  genericSubjectId String @db.ObjectId
+
+  // Relations
+  book           BookMaster           @relation(fields: [bookId], references: [id])
+  genericSubject GenericSubjectMaster @relation(fields: [genericSubjectId], references: [id])
+
+  @@unique([bookId, genericSubjectId])
+  @@index([bookId])
+  @@index([genericSubjectId])
+  @@map("book_generic_tags")
+}
+
+// Junction table for Book and Specific Tags (Many-to-Many)
+model BookSpecificTag {
+  id     String @id @default(auto()) @map("_id") @db.ObjectId
+  bookId String @db.ObjectId
+  tagId  String @db.ObjectId
+
+  // Relations
+  book BookMaster @relation(fields: [bookId], references: [id])
+  tag  TagMaster  @relation(fields: [tagId], references: [id])
+
+  @@unique([bookId, tagId])
+  @@index([bookId])
+  @@index([tagId])
+  @@map("book_specific_tags")
+}
+
+// Editors (One-to-Many with BookMaster)
+model BookEditor {
+  id     String  @id @default(auto()) @map("_id") @db.ObjectId
+  bookId String  @db.ObjectId
+  name   String
+  role   String? // Editor, Co-editor, etc.
+
+  // Relations
+  book BookMaster @relation(fields: [bookId], references: [id])
+
+  @@index([bookId])
+  @@index([name])
+  @@index([role])
+  @@map("book_editors")
+}
+
+// Summary Transaction
+model SummaryTransaction {
+  id                String   @id @default(auto()) @map("_id") @db.ObjectId
+  srNo              Int
+  title             String?
+  keywords          String?
+  relevantParagraph Json? // multilingual text as JSON (e.g., { en: "...", hi: "..." })
+  paragraphNo       String?
+  pageNo            String?
+  informationRating String?
+  remark            String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Foreign Keys
+  bookId            String  @db.ObjectId
+  userId            String  @db.ObjectId
+  genericSubjectId  String? @db.ObjectId
+  specificSubjectId String? @db.ObjectId
+
+  // Relations
+  book            BookMaster            @relation(fields: [bookId], references: [id])
+  user            User                  @relation(fields: [userId], references: [id])
+  genericSubject  GenericSubjectMaster? @relation(fields: [genericSubjectId], references: [id])
+  specificSubject TagMaster?            @relation(fields: [specificSubjectId], references: [id])
+
+  @@index([bookId])
+  @@index([userId])
+  @@index([genericSubjectId])
+  @@index([specificSubjectId])
+  @@index([srNo])
+  @@index([title])
+  @@map("summary_transactions")
+}
