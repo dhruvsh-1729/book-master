@@ -20,7 +20,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
 
         const where = {
-          userId, // Only show books for authenticated user
+          // userId, // Only show books for authenticated user
           ...(search ? {
             OR: [
               { bookName: { contains: search as string } },
