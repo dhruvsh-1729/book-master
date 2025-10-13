@@ -1,7 +1,7 @@
 // pages/subjects/index.tsx - Subjects Management Page
 import React, { useState, useEffect } from 'react';
 import { Tag, Plus } from 'lucide-react';
-import { DataTable, Modal, FormInput, Alert, Card, Breadcrumb } from '../../components/CoreComponents';
+import { DataTable, FormInput, Alert, Card, Breadcrumb } from '../../components/CoreComponents';
 import { 
   GenericSubjectMaster, 
   TagMaster, 
@@ -110,10 +110,12 @@ const SubjectsPage: React.FC = () => {
 
   const handleSubmit = async (formData: SubjectFormData) => {
     try {
-      const isEditing = editingItem?.id;
+      const isEditing = !!editingItem && 'id' in editingItem && !!editingItem.id;
+      const id = isEditing ? (editingItem as GenericSubjectMaster | TagMaster).id : undefined;
+
       const endpoint = activeTab === 'generic' 
-        ? (isEditing ? `/api/subjects/generic/${editingItem.id}` : '/api/subjects/generic')
-        : (isEditing ? `/api/subjects/tags/${editingItem.id}` : '/api/subjects/tags');
+        ? (isEditing ? `/api/subjects/generic/${id}` : '/api/subjects/generic')
+        : (isEditing ? `/api/subjects/tags/${id}` : '/api/subjects/tags');
       
       const response = await fetch(endpoint, {
         method: isEditing ? 'PUT' : 'POST',
@@ -218,20 +220,44 @@ const SubjectsPage: React.FC = () => {
         )}
       </Card>
 
-      {/* Create/Edit Modal */}
-      <Modal
-        isOpen={showModal}
-        onClose={() => setShowModal(false)}
-        title={`${editingItem ? 'Edit' : 'Add'} ${activeTab === 'generic' ? 'Generic Subject' : 'Specific Tag'}`}
-        size="md"
-      >
-        <SubjectForm
-          activeTab={activeTab}
-          initialData={editingItem}
-          onSubmit={handleSubmit}
-          onCancel={() => setShowModal(false)}
-        />
-      </Modal>
+      {/* Create/Edit Modal (custom div overlay) */}
+      {showModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center"
+          aria-labelledby="subject-modal-title"
+          role="dialog"
+          aria-modal="true"
+        >
+          {/* Backdrop */}
+          <div
+            className="fixed inset-0 bg-black/50"
+            onClick={() => setShowModal(false)}
+          />
+          {/* Panel */}
+          <div className="relative z-10 w-full max-w-md mx-4 bg-white rounded-lg shadow-xl">
+            <div className="flex items-center justify-between px-6 py-4 border-b">
+              <h3 id="subject-modal-title" className="text-lg font-medium text-gray-900">
+                {`${editingItem ? 'Edit' : 'Add'} ${activeTab === 'generic' ? 'Generic Subject' : 'Specific Tag'}`}
+              </h3>
+              <button
+                onClick={() => setShowModal(false)}
+                className="text-gray-400 hover:text-gray-600 text-2xl leading-none"
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+            <div className="p-6 max-h-[80vh] overflow-y-auto">
+              <SubjectForm
+                activeTab={activeTab}
+                initialData={editingItem}
+                onSubmit={handleSubmit}
+                onCancel={() => setShowModal(false)}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -251,10 +277,9 @@ const SubjectForm: React.FC<SubjectFormProps> = ({
   onCancel 
 }) => {
   const [formData, setFormData] = useState<SubjectFormData>({
-    name: '',
-    description: '',
-    category: '',
-    ...initialData
+    name: initialData?.name || '',
+    description: initialData?.description || '',
+    category: (initialData as TagMaster)?.category || '',
   });
   const [loading, setLoading] = useState<boolean>(false);
   const [errors, setErrors] = useState<Partial<Record<keyof SubjectFormData, string>>>({});
@@ -289,15 +314,15 @@ const SubjectForm: React.FC<SubjectFormProps> = ({
   };
 
   return (
-    <div className="space-y-6">
+    <form onSubmit={handleSubmit} className="space-y-6">
       <FormInput
         label="Name"
         name="name"
-        value={formData.name}
+        value={formData.name || ''}
         onChange={handleChange}
         required
         error={errors.name}
-        placeholder={`Enter ${activeTab} subject name`}
+        placeholder={`Enter ${activeTab === 'generic' ? 'generic' : 'specific'} subject name`}
       />
 
       <FormInput
@@ -305,7 +330,7 @@ const SubjectForm: React.FC<SubjectFormProps> = ({
         name="description"
         type="textarea"
         rows={3}
-        value={formData.description}
+        value={formData.description || ''}
         onChange={handleChange}
         placeholder="Enter description (optional)"
       />
@@ -314,7 +339,7 @@ const SubjectForm: React.FC<SubjectFormProps> = ({
         <FormInput
           label="Category"
           name="category"
-          value={formData.category}
+          value={formData.category || ''}
           onChange={handleChange}
           placeholder="Enter category (optional)"
         />
@@ -329,14 +354,14 @@ const SubjectForm: React.FC<SubjectFormProps> = ({
           Cancel
         </button>
         <button
-          onClick={handleSubmit}
+          type="submit"
           disabled={loading}
           className="px-4 py-2 border border-transparent rounded-md text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {loading ? 'Saving...' : (initialData?.id ? 'Update' : 'Create')}
+          {loading ? 'Saving...' : (initialData && 'id' in (initialData as any) ? 'Update' : 'Create')}
         </button>
       </div>
-    </div>
+    </form>
   );
 };
 

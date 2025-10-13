@@ -1,67 +1,62 @@
+// pages/api/dashboard/stats.ts
 import { NextApiRequest, NextApiResponse } from 'next';
-import { prisma } from '../../../lib/prisma';
 import { getUserIdFromRequest } from '../../../lib/auth';
+import { withErrorHandler } from '../../../lib/middleware/error-handler';
+import { ApiError } from '../../../lib/utils/api-helpers';
+import prisma from '../../../lib/prisma';
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+export default withErrorHandler(async (req: NextApiRequest, res: NextApiResponse) => {
   if (req.method !== 'GET') {
-    res.setHeader('Allow', ['GET']);
-    return res.status(405).json({ error: `Method ${req.method} Not Allowed` });
+    throw new ApiError(405, `Method ${req.method} Not Allowed`, 'METHOD_NOT_ALLOWED');
   }
 
   const userId = getUserIdFromRequest(req);
-  
   if (!userId) {
-    return res.status(401).json({ error: 'Authentication required' });
+    throw new ApiError(401, 'Authentication required', 'AUTH_REQUIRED');
   }
 
-  try {
-    // Get current date for monthly statistics
-    const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-
-    // Get stats for authenticated user only
-    const [
-      totalBooks,
-      totalTransactions,
-      totalGenericSubjects,
-      totalSpecificTags,
-      newBooksThisMonth,
-      newTransactionsThisMonth
-    ] = await Promise.all([
-      prisma.bookMaster.count({ where: { userId } }),
-      prisma.summaryTransaction.count({ where: { userId } }),
-      prisma.genericSubjectMaster.count(), // These are global
-      prisma.tagMaster.count(), // These are global
+  // Use Promise.all for parallel queries
+  const [
+    totalBooks,
+    totalTransactions,
+    totalGenericSubjects,
+    totalSpecificTags,
+    recentActivity
+  ] = await Promise.all([
+    prisma.bookMaster.count({ where: { userId } }),
+    prisma.summaryTransaction.count({ where: { userId } }),
+    prisma.genericSubjectMaster.count(),
+    prisma.tagMaster.count(),
+    // Get activity for the current month
+    prisma.$transaction([
       prisma.bookMaster.count({
-        where: { 
+        where: {
           userId,
-          createdAt: { gte: startOfMonth } 
+          createdAt: {
+            gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+          }
         }
       }),
       prisma.summaryTransaction.count({
-        where: { 
+        where: {
           userId,
-          createdAt: { gte: startOfMonth } 
+          createdAt: {
+            gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+          }
         }
       })
-    ]);
+    ])
+  ]);
 
-    const statsResponse = {
-      totalBooks,
-      totalTransactions,
-      totalGenericSubjects,
-      totalSpecificTags,
-      newBooksThisMonth,
-      newTransactionsThisMonth,
-      lastUpdated: new Date().toISOString()
-    };
+  const [newBooksThisMonth, newTransactionsThisMonth] = recentActivity;
 
-    res.status(200).json(statsResponse);
-  } catch (error: any) {
-    console.error('Error fetching dashboard stats:', error);
-    res.status(500).json({ 
-      error: 'Failed to fetch dashboard stats',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-}
+  return res.status(200).json({
+    totalBooks,
+    totalTransactions,
+    totalGenericSubjects,
+    totalSpecificTags,
+    newBooksThisMonth,
+    newTransactionsThisMonth,
+    lastUpdated: new Date()
+  });
+});
