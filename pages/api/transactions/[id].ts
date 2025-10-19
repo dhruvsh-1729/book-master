@@ -1,155 +1,122 @@
-// pages/api/transactions/[id].js
-import { PrismaClient } from '@prisma/client';
-import { NextApiRequest, NextApiResponse } from 'next';
+// pages/api/transactions/[id].ts
+import type { NextApiRequest, NextApiResponse } from "next";
+import prisma from "@/lib/prisma";
 
-const prisma = new PrismaClient();
+const toStr = (v: unknown, fallback = ""): string =>
+  typeof v === "string" ? v : Array.isArray(v) ? (v[0] ?? fallback) : fallback;
 
-export default async function handler(req:NextApiRequest, res:NextApiResponse) {
-  const { method, query: { id } } = req;
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  const id = toStr(req.query.id);
+  if (!id) return res.status(400).json({ error: "Transaction ID is required" });
 
-  switch (method) {
-    case 'GET':
-      try {
-        const transaction = await prisma.summaryTransaction.findUnique({
-          where: { id: id as string },
-          include: {
-            book: { 
-              select: { 
-                id: true, 
-                bookName: true, 
-                libraryNumber: true,
-                bookSummary: true,
-                pageNumbers: true
-              } 
+  if (req.method === "GET") {
+    try {
+      const tx = await prisma.summaryTransaction.findUnique({
+        where: { id },
+        include: {
+          book: {
+            select: {
+              id: true,
+              bookName: true,
+              libraryNumber: true,
+              bookSummary: true,
+              pageNumbers: true,
             },
-            user: { 
-              select: { 
-                id: true, 
-                name: true, 
-                email: true 
-              } 
-            },
-            genericSubject: true,
-            specificSubject: true
-          }
-        });
-
-        if (!transaction) {
-          return res.status(404).json({ error: 'Transaction not found' });
-        }
-
-        res.status(200).json(transaction);
-      } catch (error) {
-        console.error('Error fetching transaction:', error);
-        res.status(500).json({ error: 'Failed to fetch transaction' });
-      }
-      break;
-
-    case 'PUT':
-      try {
-        const {
-          srNo,
-          genericSubjectId,
-          specificSubjectId,
-          title,
-          keywords,
-          relevantParagraph,
-          paragraphNo,
-          pageNo,
-          informationRating,
-          remark
-        } = req.body;
-
-        // Check if transaction exists
-        const existingTransaction = await prisma.summaryTransaction.findUnique({
-          where: { id: id as string }
-        });
-
-        if (!existingTransaction) {
-          return res.status(404).json({ error: 'Transaction not found' });
-        }
-
-        // If srNo is being updated, check for uniqueness within the book
-        if (srNo !== undefined && srNo !== existingTransaction.srNo) {
-          const duplicateTransaction = await prisma.summaryTransaction.findFirst({
-            where: {
-              bookId: existingTransaction.bookId,
-              srNo: parseInt(srNo),
-              id: { not: id as string }
-            }
-          });
-
-          if (duplicateTransaction) {
-            return res.status(400).json({ 
-              error: 'Serial number already exists for this book' 
-            });
-          }
-        }
-
-        const transaction = await prisma.summaryTransaction.update({
-          where: { id: id as string },
-          data: {
-            ...(srNo !== undefined && { srNo: parseInt(srNo) }),
-            genericSubjectId: genericSubjectId || null,
-            specificSubjectId: specificSubjectId || null,
-            title,
-            keywords,
-            relevantParagraph,
-            paragraphNo,
-            pageNo,
-            informationRating,
-            remark
           },
-          include: {
-            book: { 
-              select: { 
-                id: true, 
-                bookName: true, 
-                libraryNumber: true 
-              } 
-            },
-            user: { 
-              select: { 
-                id: true, 
-                name: true, 
-                email: true 
-              } 
-            },
-            genericSubject: true,
-            specificSubject: true
-          }
-        });
+          user: { select: { id: true, name: true, email: true } },
+          genericSubject: true,
+          specificSubject: true,
+        },
+      });
+      if (!tx) return res.status(404).json({ error: "Transaction not found" });
+      return res.status(200).json(tx);
+    } catch (e) {
+      console.error("GET /transactions/[id] error", e);
+      return res.status(500).json({ error: "Failed to fetch transaction" });
+    }
+  } else if (req.method === "PUT") {
+    try {
+      const exists = await prisma.summaryTransaction.findUnique({ where: { id } });
+      if (!exists) return res.status(404).json({ error: "Transaction not found" });
 
-        res.status(200).json(transaction);
-      } catch (error) {
-        console.error('Error updating transaction:', error);
-        res.status(500).json({ error: 'Failed to update transaction' });
+      const {
+        srNo,
+        genericSubjectId,
+        specificSubjectId,
+        title,
+        keywords,
+        relevantParagraph,
+        paragraphNo,
+        pageNo,
+        informationRating,
+        remark,
+        summary,
+        conclusion,
+      } = req.body ?? {};
+
+      // if srNo is changing, ensure uniqueness within the same book
+      if (srNo !== undefined && Number(srNo) !== exists.srNo) {
+        const dup = await prisma.summaryTransaction.findFirst({
+          where: {
+            bookId: exists.bookId,
+            srNo: Number(srNo),
+            id: { not: id },
+          },
+          select: { id: true },
+        });
+        if (dup)
+          return res
+            .status(400)
+            .json({ error: "Serial number already exists for this book" });
       }
-      break;
 
-    case 'DELETE':
-      try {
-        const transaction = await prisma.summaryTransaction.findUnique({
-          where: { id: id as string }
-        });
+      const updated = await prisma.summaryTransaction.update({
+        where: { id },
+        data: {
+          ...(srNo !== undefined ? { srNo: Number(srNo) } : {}),
+          genericSubjectId:
+            genericSubjectId !== undefined
+              ? genericSubjectId || null
+              : undefined,
+          specificSubjectId:
+            specificSubjectId !== undefined
+              ? specificSubjectId || null
+              : undefined,
+          title: title ?? undefined,
+          keywords: keywords ?? undefined,
+          relevantParagraph: relevantParagraph ?? undefined,
+          paragraphNo: paragraphNo ?? undefined,
+          pageNo: pageNo ?? undefined,
+          informationRating: informationRating ?? undefined,
+          remark: remark ?? undefined,
+          summary: summary ?? undefined,
+          conclusion: conclusion ?? undefined,
+        },
+        include: {
+          book: { select: { id: true, bookName: true, libraryNumber: true } },
+          user: { select: { id: true, name: true, email: true } },
+          genericSubject: true,
+          specificSubject: true,
+        },
+      });
 
-        if (!transaction) {
-          return res.status(404).json({ error: 'Transaction not found' });
-        }
-
-        await prisma.summaryTransaction.delete({
-          where: { id: id as string }
-        });
-
-        res.status(204).end();
-      } catch (error) {
-        console.error('Error deleting transaction:', error);
-        res.status(500).json({ error: 'Failed to delete transaction' });
-      }
-      break;
-
-    default:
-      res.setHeader('Allow', ['GET', 'PUT', 'DELETE']);
-      res.status(405).end(`Method ${method} Not Allowed`);
+      return res.status(200).json(updated);
+    } catch (e) {
+      console.error("PUT /transactions/[id] error", e);
+      return res.status(500).json({ error: "Failed to update transaction" });
+    }
+  } else if (req.method === "DELETE") {
+    try {
+      const exists = await prisma.summaryTransaction.findUnique({ where: { id } });
+      if (!exists) return res.status(404).json({ error: "Transaction not found" });
+      await prisma.summaryTransaction.delete({ where: { id } });
+      return res.status(204).end();
+    } catch (e) {
+      console.error("DELETE /transactions/[id] error", e);
+      return res.status(500).json({ error: "Failed to delete transaction" });
+    }
   }
+
+  res.setHeader("Allow", ["GET", "PUT", "DELETE"]);
+  return res.status(405).end(`Method ${req.method} Not Allowed`);
 }

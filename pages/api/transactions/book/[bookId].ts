@@ -1,27 +1,29 @@
 // pages/api/transactions/book/[bookId].ts
-import type { NextApiRequest, NextApiResponse } from 'next';
-import { Prisma, PrismaClient } from '@prisma/client'; // use Prisma for enums
-// Prefer your singleton: import prisma from '@/lib/prisma';
-const prisma = new PrismaClient();
+import type { NextApiRequest, NextApiResponse } from "next";
+import prisma from "@/lib/prisma";
 
-const toStr = (v: string | string[] | undefined, fallback = ''): string =>
-  typeof v === 'string' ? v : Array.isArray(v) ? v[0] ?? fallback : fallback;
+const toStr = (v: unknown, fallback = ""): string =>
+  typeof v === "string" ? v : Array.isArray(v) ? (v[0] ?? fallback) : fallback;
+const toInt = (v: unknown, def = 1, min = 1, max?: number): number => {
+  const n = Number(toStr(v, String(def)));
+  const clamped = Number.isFinite(n) ? Math.max(min, n) : def;
+  return max ? Math.min(clamped, max) : clamped;
+};
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== 'GET') {
-    res.setHeader('Allow', ['GET']);
+  if (req.method !== "GET") {
+    res.setHeader("Allow", ["GET"]);
     return res.status(405).end(`Method ${req.method} Not Allowed`);
   }
 
   try {
-    const pageNum  = Math.max(1, Number(toStr(req.query.page, '1')) || 1);
-    const limitNum = Math.max(1, Number(toStr(req.query.limit, '50')) || 50);
-    const q        = toStr(req.query.search).trim();
-    const bookId   = toStr(req.query.bookId).trim();
+    const page = toInt(req.query.page, 1, 1);
+    const limit = toInt(req.query.limit, 50, 1, 200);
+    const q = toStr(req.query.search).trim();
+    const bookId = toStr(req.query.bookId).trim();
 
-    if (!bookId) return res.status(400).json({ error: 'bookId is required' });
+    if (!bookId) return res.status(400).json({ error: "bookId is required" });
 
-    // Ensure book exists
     const book = await prisma.bookMaster.findUnique({
       where: { id: bookId },
       select: {
@@ -32,16 +34,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         pageNumbers: true,
       },
     });
-    if (!book) return res.status(404).json({ error: 'Book not found' });
+    if (!book) return res.status(404).json({ error: "Book not found" });
 
-    const where: Prisma.SummaryTransactionWhereInput = {
+    const where = {
       bookId,
       ...(q
         ? {
             OR: [
-              { title:    { contains: q, mode: Prisma.QueryMode.insensitive } },
-              { keywords: { contains: q, mode: Prisma.QueryMode.insensitive } },
-              { remark:   { contains: q, mode: Prisma.QueryMode.insensitive } },
+              { title: { contains: q, mode: "insensitive" as const } },
+              { keywords: { contains: q, mode: "insensitive" as const } },
+              { remark: { contains: q, mode: "insensitive" as const } },
             ],
           }
         : {}),
@@ -55,25 +57,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           genericSubject: true,
           specificSubject: true,
         },
-        skip: (pageNum - 1) * limitNum,
-        take: limitNum,
-        orderBy: { srNo: 'asc' },
+        skip: (page - 1) * limit,
+        take: limit,
+        orderBy: [{ srNo: "asc" }],
       }),
       prisma.summaryTransaction.count({ where }),
     ]);
 
-    res.status(200).json({
+    return res.status(200).json({
       book,
       transactions,
-      pagination: {
-        page: pageNum,
-        limit: limitNum,
-        total,
-        pages: Math.ceil(total / limitNum),
-      },
+      pagination: { page, limit, total, pages: Math.ceil(total / limit) },
     });
-  } catch (error) {
-    console.error('Error fetching book transactions:', error);
-    res.status(500).json({ error: 'Failed to fetch book transactions' });
+  } catch (e) {
+    console.error("GET /transactions/book/[bookId] error", e);
+    return res.status(500).json({ error: "Failed to fetch book transactions" });
   }
 }

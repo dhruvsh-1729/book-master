@@ -1,59 +1,119 @@
 // pages/api/books/index.ts
-import { NextApiRequest, NextApiResponse } from 'next';
-import { getUserIdFromRequest } from '../../../lib/auth';
-import { BookRepository } from '../../../lib/repositories/book.repository';
-import { BookService } from '../../../lib/services/book.service';
-import { CacheService } from '../../../lib/services/cache.service';
-import { withErrorHandler } from '../../../lib/middleware/error-handler';
-import { parseQueryParam, parseIntParam, buildPaginationResponse, ApiError } from '../../../lib/utils/api-helpers';
-import prisma from '../../../lib/prisma';
+import type { NextApiRequest, NextApiResponse } from "next";
+import prisma from "@/lib/prisma";
+import { getUserIdFromRequest } from "@/lib/auth";
 
-const bookRepo = new BookRepository(prisma);
-const cacheService = new CacheService();
-const bookService = new BookService(bookRepo, cacheService);
+const toStr = (v: unknown, fallback = ""): string =>
+  typeof v === "string" ? v : Array.isArray(v) ? (v[0] ?? fallback) : fallback;
 
-export default withErrorHandler(async (req: NextApiRequest, res: NextApiResponse) => {
+const toInt = (v: unknown, def = 1, min = 1, max?: number): number => {
+  const n = Number(toStr(v, String(def)));
+  const clamped = Number.isFinite(n) ? Math.max(min, n) : def;
+  return max ? Math.min(clamped, max) : clamped;
+};
+
+const paginate = (page: number, limit: number) => ({
+  skip: (page - 1) * limit,
+  take: limit,
+});
+
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const userId = getUserIdFromRequest(req);
-  if (!userId) {
-    throw new ApiError(401, 'Authentication required', 'AUTH_REQUIRED');
-  }
+  if (!userId) return res.status(401).json({ error: "Authentication required" });
 
-  switch (req.method) {
-    case 'GET': {
-      const page = parseIntParam(req.query.page, 1, 1);
-      const limit = parseIntParam(req.query.limit, 10, 1, 100);
-      const search = parseQueryParam(req.query.search);
-      
-      const filters = {
+  if (req.method === "GET") {
+    try {
+      const page = toInt(req.query.page, 1, 1);
+      const limit = toInt(req.query.limit, 10, 1, 100);
+      const search = toStr(req.query.search).trim();
+
+      const where = {
         userId,
-        search: search || undefined
+        ...(search
+          ? {
+              OR: [
+                { bookName: { contains: search, mode: "insensitive" as const } },
+                { publisherName: { contains: search, mode: "insensitive" as const } },
+                { grade: { contains: search, mode: "insensitive" as const } },
+                { remark: { contains: search, mode: "insensitive" as const } },
+                { libraryNumber: { contains: search, mode: "insensitive" as const } },
+              ],
+            }
+          : {}),
       };
 
-      const { books, total } = await bookService.getBooks(filters, page, limit);
-      
+      const [{ skip, take }] = [paginate(page, limit)];
+      const [books, total] = await Promise.all([
+        prisma.bookMaster.findMany({
+          where,
+          skip,
+          take,
+          orderBy: [{ createdAt: "desc" }],
+          select: {
+            id: true,
+            libraryNumber: true,
+            bookName: true,
+            bookSummary: true,
+            publisherName: true,
+            grade: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+        }),
+        prisma.bookMaster.count({ where }),
+      ]);
+
       return res.status(200).json({
         books,
-        pagination: buildPaginationResponse(page, limit, total)
+        pagination: { page, limit, total, pages: Math.ceil(total / limit) },
       });
+    } catch (e) {
+      console.error("GET /books error", e);
+      return res.status(500).json({ error: "Failed to fetch books" });
     }
+  } else if (req.method === "POST") {
+    try {
+      const {
+        libraryNumber,
+        bookName,
+        bookSummary,
+        pageNumbers,
+        grade,
+        remark,
+        edition,
+        publisherName,
+      } = req.body ?? {};
 
-    case 'POST': {
-      const { libraryNumber, bookName, ...rest } = req.body;
-      
       if (!libraryNumber || !bookName) {
-        throw new ApiError(400, 'Library number and book name are required', 'MISSING_FIELDS');
+        return res
+          .status(400)
+          .json({ error: "Library number and book name are required" });
       }
 
-      const book = await bookService.createBook({
-        ...req.body,
-        userId
+      const created = await prisma.bookMaster.create({
+        data: {
+          libraryNumber: String(libraryNumber),
+          bookName: String(bookName),
+          bookSummary: bookSummary ?? null,
+          pageNumbers: pageNumbers ?? null,
+          grade: grade ?? null,
+          remark: remark ?? null,
+          edition: edition ?? null,
+          publisherName: publisherName ?? null,
+          userId,
+        },
       });
 
-      return res.status(201).json(book);
+      return res.status(201).json(created);
+    } catch (e: any) {
+      if (e?.code === "P2002") {
+        return res.status(400).json({ error: "Library number already exists" });
+      }
+      console.error("POST /books error", e);
+      return res.status(500).json({ error: "Failed to create book" });
     }
-
-    default:
-      res.setHeader('Allow', ['GET', 'POST']);
-      throw new ApiError(405, `Method ${req.method} Not Allowed`, 'METHOD_NOT_ALLOWED');
   }
-});
+
+  res.setHeader("Allow", ["GET", "POST"]);
+  return res.status(405).end(`Method ${req.method} Not Allowed`);
+}

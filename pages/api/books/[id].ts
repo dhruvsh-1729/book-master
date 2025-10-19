@@ -1,50 +1,97 @@
 // pages/api/books/[id].ts
-import { NextApiRequest, NextApiResponse } from 'next';
-import { getUserIdFromRequest } from '../../../lib/auth';
-import { BookRepository } from '../../../lib/repositories/book.repository';
-import { BookService } from '../../../lib/services/book.service';
-import { CacheService } from '../../../lib/services/cache.service';
-import { withErrorHandler } from '../../../lib/middleware/error-handler';
-import { parseQueryParam, ApiError } from '../../../lib/utils/api-helpers';
-import prisma from '../../../lib/prisma';
+import type { NextApiRequest, NextApiResponse } from "next";
+import prisma from "@/lib/prisma";
+import { getUserIdFromRequest } from "@/lib/auth";
 
-const bookRepo = new BookRepository(prisma);
-const cacheService = new CacheService();
-const bookService = new BookService(bookRepo, cacheService);
+const toStr = (v: unknown, fallback = ""): string =>
+  typeof v === "string" ? v : Array.isArray(v) ? (v[0] ?? fallback) : fallback;
 
-export default withErrorHandler(async (req: NextApiRequest, res: NextApiResponse) => {
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const userId = getUserIdFromRequest(req);
-  if (!userId) {
-    throw new ApiError(401, 'Authentication required', 'AUTH_REQUIRED');
+  if (!userId) return res.status(401).json({ error: "Authentication required" });
+
+  const id = toStr(req.query.id);
+  if (!id) return res.status(400).json({ error: "Book ID is required" });
+
+  if (req.method === "GET") {
+    try {
+      const includeTransactions = toStr(req.query.includeTransactions) === "true";
+
+      const book = await prisma.bookMaster.findFirst({
+        where: { id, userId },
+        include: includeTransactions
+          ? {
+              transactions: {
+                orderBy: [{ srNo: "asc" }],
+                select: {
+                  id: true,
+                  srNo: true,
+                  title: true,
+                  pageNo: true,
+                  keywords: true,
+                  remark: true,
+                  createdAt: true,
+                },
+              },
+            }
+          : undefined,
+      });
+
+      if (!book) return res.status(404).json({ error: "Book not found" });
+      return res.status(200).json(book);
+    } catch (e) {
+      console.error("GET /books/[id] error", e);
+      return res.status(500).json({ error: "Failed to fetch book" });
+    }
+  } else if (req.method === "PUT") {
+    try {
+      // only update the owner's book
+      const exists = await prisma.bookMaster.findFirst({ where: { id, userId } });
+      if (!exists) return res.status(404).json({ error: "Book not found" });
+
+      const updated = await prisma.bookMaster.update({
+        where: { id },
+        data: {
+          libraryNumber: req.body?.libraryNumber ?? undefined,
+          bookName: req.body?.bookName ?? undefined,
+          bookSummary: req.body?.bookSummary ?? undefined,
+          pageNumbers: req.body?.pageNumbers ?? undefined,
+          grade: req.body?.grade ?? undefined,
+          remark: req.body?.remark ?? undefined,
+          edition: req.body?.edition ?? undefined,
+          publisherName: req.body?.publisherName ?? undefined,
+        },
+      });
+
+      return res.status(200).json(updated);
+    } catch (e: any) {
+      if (e?.code === "P2002")
+        return res.status(400).json({ error: "Library number already exists" });
+      console.error("PUT /books/[id] error", e);
+      return res.status(500).json({ error: "Failed to update book" });
+    }
+  } else if (req.method === "DELETE") {
+    try {
+      const exists = await prisma.bookMaster.findFirst({ where: { id, userId } });
+      if (!exists) return res.status(404).json({ error: "Book not found" });
+
+      // Check if bookId is present as foreign key in summaryTransactions table
+      const summaryTransaction = await prisma.summaryTransaction.findFirst({
+      where: { bookId: id },
+      });
+
+      if (summaryTransaction) {
+      return res.status(400).json({ error: "Delete transactions before deleting the book." });
+      }
+
+      await prisma.bookMaster.delete({ where: { id } });
+      return res.status(204).end();
+    } catch (e) {
+      console.error("DELETE /books/[id] error", e);
+      return res.status(500).json({ error: "Failed to delete book" });
+    }
   }
 
-  const id = parseQueryParam(req.query.id);
-  if (!id) {
-    throw new ApiError(400, 'Book ID is required', 'MISSING_ID');
-  }
-
-  switch (req.method) {
-    case 'GET': {
-      const includeTransactions = req.query.includeTransactions === 'true';
-      const book = await bookService.getBookById(id, userId, includeTransactions);
-      res.status(200).json(book);
-      return;
-    }
-
-    case 'PUT': {
-      const book = await bookService.updateBook(id, userId, req.body);
-      res.status(200).json(book);
-      return;
-    }
-
-    case 'DELETE': {
-      await bookService.deleteBook(id, userId);
-      res.status(204).end();
-      return;
-    }
-
-    default:
-      res.setHeader('Allow', ['GET', 'PUT', 'DELETE']);
-      throw new ApiError(405, `Method ${req.method} Not Allowed`, 'METHOD_NOT_ALLOWED');
-  }
-});
+  res.setHeader("Allow", ["GET", "PUT", "DELETE"]);
+  return res.status(405).end(`Method ${req.method} Not Allowed`);
+}
