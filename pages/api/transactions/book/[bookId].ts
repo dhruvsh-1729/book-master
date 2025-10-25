@@ -18,7 +18,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     const page = toInt(req.query.page, 1, 1);
-    const limit = toInt(req.query.limit, 50, 1, 200);
+    const limit = toInt(req.query.limit, 50, 1, 500);
     const q = toStr(req.query.search).trim();
     const bookId = toStr(req.query.bookId).trim();
 

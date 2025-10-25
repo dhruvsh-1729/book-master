@@ -15,7 +15,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (req.method === "GET") {
     try {
       const page = toInt(req.query.page, 1, 1);
-      const limit = toInt(req.query.limit, 50, 1, 200);
+      const limit = toInt(req.query.limit, 50, 1, 500);
       const search = toStr(req.query.search).trim();
 
       const where =
