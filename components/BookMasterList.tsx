@@ -1,16 +1,15 @@
 // components/BookMasterList.tsx
-
 import React, { useState, useEffect } from 'react';
-import { Book, Plus, Search, Tag as TagIcon, FileText, Users } from 'lucide-react';
-import { 
-  DataTable, 
-  Modal, 
-  FormInput, 
-  Alert, 
-  Card, 
-  Breadcrumb, 
+import { Book, Plus, FileText, Tag as TagIcon } from 'lucide-react';
+import {
+  DataTable,
+  Modal,
+  FormInput,
+  Alert,
+  Card,
+  Breadcrumb,
   StatsCard,
-  LoadingSpinner 
+  LoadingSpinner,
 } from './CoreComponents';
 import {
   BookMaster,
@@ -21,18 +20,12 @@ import {
   TagMaster,
   DataTableColumn,
   PaginationInfo,
-  AlertProps
+  AlertProps,
 } from '../types';
 
-// Book Master List Component
 const BookMasterList: React.FC = () => {
   const [books, setBooks] = useState<BookMaster[]>([]);
-  const [pagination, setPagination] = useState<PaginationInfo>({
-    page: 1,
-    limit: 10,
-    total: 0,
-    pages: 0
-  });
+  const [pagination, setPagination] = useState<PaginationInfo>({ page: 1, limit: 10, total: 0, pages: 0 });
   const [loading, setLoading] = useState<boolean>(true);
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [showCreateModal, setShowCreateModal] = useState<boolean>(false);
@@ -43,16 +36,15 @@ const BookMasterList: React.FC = () => {
     totalBooks: 0,
     totalTransactions: 0,
     totalGenericSubjects: 0,
-    totalSpecificTags: 0
+    totalSpecificTags: 0,
   });
 
-  // Fetch books
-  const fetchBooks = async (page: number = 1, search: string = '') => {
+  const fetchBooks = async (page = 1, search = '') => {
     setLoading(true);
     try {
-      const response = await fetch(`/api/books?page=${page}&limit=10&search=${search}`);
-      const data: BooksResponse = await response.json();
-      setBooks(data.books);
+      const res = await fetch(`/api/books?page=${page}&limit=10&search=${encodeURIComponent(search)}`);
+      const data: BooksResponse = await res.json();
+      setBooks(data.books || []);
       setPagination(data.pagination);
     } catch (error) {
       console.error('Error fetching books:', error);
@@ -62,12 +54,24 @@ const BookMasterList: React.FC = () => {
     }
   };
 
-  // Fetch stats
   const fetchStats = async () => {
     try {
-      const response = await fetch('/api/dashboard/stats');
-      const data: DashboardStats = await response.json();
-      setStats(data);
+      const [booksTotalRes, txTotalRes, genRes, tagRes] = await Promise.all([
+        fetch('/api/books?page=1&limit=1'),
+        fetch('/api/transactions?page=1&limit=1'),
+        fetch('/api/subjects/generic?page=1&limit=1'),
+        fetch('/api/subjects/tags?page=1&limit=1'),
+      ]);
+      const booksTotal: BooksResponse = await booksTotalRes.json();
+      const txTotal = await txTotalRes.json();
+      const generic = await genRes.json();
+      const tags = await tagRes.json();
+      setStats({
+        totalBooks: booksTotal?.pagination?.total ?? 0,
+        totalTransactions: txTotal?.pagination?.total ?? 0,
+        totalGenericSubjects: generic?.pagination?.total ?? 0,
+        totalSpecificTags: tags?.pagination?.total ?? 0,
+      });
     } catch (error) {
       console.error('Error fetching stats:', error);
     }
@@ -78,168 +82,68 @@ const BookMasterList: React.FC = () => {
     fetchStats();
   }, []);
 
-  // Handle search
-  const handleSearch = (search: string) => {
-    setSearchTerm(search);
-    fetchBooks(1, search);
+  const handleSearch = (q: string) => {
+    setSearchTerm(q);
+    fetchBooks(1, q);
   };
-
-  // Handle page change
-  const handlePageChange = (page: number) => {
-    fetchBooks(page, searchTerm);
-  };
-
-  // Handle view book
-  const handleViewBook = (book: BookMaster) => {
-    window.location.href = `/books/${book.id}`;
-  };
-
-  // Handle edit book
-  const handleEditBook = (book: BookMaster) => {
-    setSelectedBook(book);
+  const handlePageChange = (page: number) => fetchBooks(page, searchTerm);
+  const handleViewBook = (b: BookMaster) => (window.location.href = `/books/${b.id}`);
+  const handleEditBook = (b: BookMaster) => {
+    setSelectedBook(b);
     setShowEditModal(true);
   };
-
-  // Handle delete book
-  const handleDeleteBook = async (book: BookMaster) => {
-    if (!confirm(`Are you sure you want to delete "${book.bookName}"?`)) {
-      return;
-    }
-
+  const handleDeleteBook = async (b: BookMaster) => {
+    if (!confirm(`Delete "${b.bookName}"?`)) return;
     try {
-      const response = await fetch(`/api/books/${book.id}`, {
-        method: 'DELETE',
-      });
-
-      if (response.ok) {
-        setAlert({ type: 'success', message: 'Book deleted successfully' });
-        fetchBooks(pagination.page, searchTerm);
-      } else {
-        throw new Error('Failed to delete book');
-      }
-    } catch (error) {
-      console.error('Error deleting book:', error);
-      setAlert({ type: 'error', message: 'Failed to delete book' });
+      const res = await fetch(`/api/books/${b.id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Failed to delete book');
+      setAlert({ type: 'success', message: 'Book deleted successfully' });
+      fetchBooks(pagination.page, searchTerm);
+    } catch (e: any) {
+      setAlert({ type: 'error', message: e.message });
     }
   };
 
-  // Table columns configuration
   const columns: DataTableColumn<BookMaster>[] = [
     {
       key: 'libraryNumber',
       label: 'Library Number',
-      render: (value: string) => (
-        <span className="font-mono text-sm bg-gray-100 px-2 py-1 rounded">
-          {value}
-        </span>
-      )
+      render: (v: string) => <span className="font-mono text-sm bg-gray-100 px-2 py-1 rounded">{v}</span>,
     },
     {
       key: 'bookName',
       label: 'Book Name',
-      render: (value: string, row: BookMaster) => (
+      render: (v: string, row) => (
         <div className="max-w-xs">
-          <div className="font-medium text-gray-900 truncate">{value}</div>
-          {row.bookSummary && (
-            <div className="text-sm text-gray-500 truncate">
-              {row.bookSummary.substring(0, 100)}...
-            </div>
-          )}
+          <div className="font-medium text-gray-900 truncate">{v}</div>
+          {row.bookSummary && <div className="text-sm text-gray-500 truncate">{row.bookSummary}</div>}
         </div>
-      )
+      ),
     },
     {
-      key: 'genericTags',
-      label: 'Generic Tags',
-      render: (value: any) => (
-        <div className="flex flex-wrap gap-1">
-          {value?.slice(0, 2).map((tag: any, index: number) => (
-            <span
-              key={index}
-              className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800"
-            >
-              {tag.genericSubject.name}
-            </span>
-          ))}
-          {value?.length > 2 && (
-            <span className="text-xs text-gray-500">+{value.length - 2} more</span>
-          )}
-        </div>
-      )
+      key: 'publisherName',
+      label: 'Publisher',
+      render: (v: string | null) => v || '-',
     },
     {
-      key: 'specificTags',
-      label: 'Specific Tags',
-      render: (value: any) => (
-        <div className="flex flex-wrap gap-1">
-          {value?.slice(0, 2).map((tag: any, index: number) => (
-            <span
-              key={index}
-              className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800"
-            >
-              {tag.tag.name}
-            </span>
-          ))}
-          {value?.length > 2 && (
-            <span className="text-xs text-gray-500">+{value.length - 2} more</span>
-          )}
-        </div>
-      )
+      key: 'grade',
+      label: 'Grade',
+      render: (v: string | null) => v || '-',
     },
-    {
-      key: '_count',
-      label: 'Transactions',
-      render: (value: any) => (
-        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
-          {value?.summaryTransactions || 0}
-        </span>
-      )
-    }
   ];
 
   return (
     <div className="space-y-6">
-      <Breadcrumb 
-        items={[
-          { label: 'Dashboard', href: '/' },
-          { label: 'Book Master' }
-        ]} 
-      />
+      <Breadcrumb items={[{ label: 'Dashboard', href: '/' }, { label: 'Book Master' }]} />
 
-      {alert && (
-        <Alert
-          type={alert.type}
-          message={alert.message}
-          onClose={() => setAlert(null)}
-        />
-      )}
+      {alert && <Alert type={alert.type} message={alert.message} onClose={() => setAlert(null)} />}
 
-      {/* Stats Cards */}
+      {/* Stats */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        <StatsCard
-          title="Total Books"
-          value={stats.totalBooks || 0}
-          icon={Book}
-          color="blue"
-        />
-        <StatsCard
-          title="Total Transactions"
-          value={stats.totalTransactions || 0}
-          icon={FileText}
-          color="green"
-        />
-        <StatsCard
-          title="Generic Subjects"
-          value={stats.totalGenericSubjects || 0}
-          icon={TagIcon}
-          color="yellow"
-        />
-        <StatsCard
-          title="Specific Tags"
-          value={stats.totalSpecificTags || 0}
-          icon={TagIcon}
-          color="red"
-        />
+        <StatsCard title="Total Books" value={stats.totalBooks} icon={Book} color="blue" />
+        <StatsCard title="Total Transactions" value={stats.totalTransactions} icon={FileText} color="green" />
+        <StatsCard title="Generic Subjects" value={stats.totalGenericSubjects} icon={TagIcon} color="yellow" />
+        <StatsCard title="Specific Tags" value={stats.totalSpecificTags} icon={TagIcon} color="red" />
       </div>
 
       <Card
@@ -248,7 +152,7 @@ const BookMasterList: React.FC = () => {
         headerActions={
           <button
             onClick={() => setShowCreateModal(true)}
-            className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+            className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700"
           >
             <Plus className="h-4 w-4 mr-2" />
             Add Book
@@ -264,104 +168,85 @@ const BookMasterList: React.FC = () => {
           onView={handleViewBook}
           onEdit={handleEditBook}
           onDelete={handleDeleteBook}
-          searchable={true}
+          searchable
           onSearch={handleSearch}
           searchPlaceholder="Search books, library numbers..."
         />
       </Card>
 
-      {/* Create Book Modal */}
-      {/* Create Book Modal */}
+      {/* Create */}
       {showCreateModal && (
         <div className="fixed inset-0 z-50 overflow-y-auto">
-          <div className="fixed inset-0 bg-black bg-opacity-50" onClick={() => setShowCreateModal(false)}></div>
+          <div className="fixed inset-0 bg-black bg-opacity-50" onClick={() => setShowCreateModal(false)} />
           <div className="relative max-w-4xl mx-auto my-8 p-6 bg-white rounded-lg shadow-xl">
-        <div className="flex items-center justify-between mb-6">
-          <h3 className="text-lg font-medium">Add New Book</h3>
-          <button 
-            className="text-gray-400 hover:text-gray-500" 
-            onClick={() => setShowCreateModal(false)}
-          >
-            <span className="sr-only">Close</span>
-            <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-        <BookForm
-          onSubmit={async (formData: BookFormData) => {
-            try {
-          const response = await fetch('/api/books', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(formData),
-          });
-
-          if (response.ok) {
-            setAlert({ type: 'success', message: 'Book created successfully' });
-            setShowCreateModal(false);
-            fetchBooks(pagination.page, searchTerm);
-          } else {
-            const error = await response.json();
-            throw new Error(error.error || 'Failed to create book');
-          }
-            } catch (error: any) {
-          setAlert({ type: 'error', message: error.message });
-            }
-          }}
-          onCancel={() => setShowCreateModal(false)}
-        />
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-lg font-medium">Add New Book</h3>
+              <button className="text-gray-400 hover:text-gray-500" onClick={() => setShowCreateModal(false)}>
+                <span className="sr-only">Close</span>×
+              </button>
+            </div>
+            <BookForm
+              onSubmit={async (fd: BookFormData) => {
+                try {
+                  const res = await fetch('/api/books', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(fd),
+                  });
+                  if (!res.ok) {
+                    const e = await res.json().catch(() => ({}));
+                    throw new Error(e?.error || 'Failed to create book');
+                  }
+                  setAlert({ type: 'success', message: 'Book created successfully' });
+                  setShowCreateModal(false);
+                  fetchBooks(pagination.page, searchTerm);
+                } catch (e: any) {
+                  setAlert({ type: 'error', message: e.message });
+                }
+              }}
+              onCancel={() => setShowCreateModal(false)}
+            />
           </div>
         </div>
       )}
 
-      {/* Edit Book Modal */}
-      {showEditModal && (
+      {/* Edit */}
+      {showEditModal && selectedBook && (
         <div className="fixed inset-0 z-50 overflow-y-auto">
-          <div className="fixed inset-0 bg-black bg-opacity-50" onClick={() => setShowEditModal(false)}></div>
+          <div className="fixed inset-0 bg-black bg-opacity-50" onClick={() => setShowEditModal(false)} />
           <div className="relative max-w-4xl mx-auto my-8 p-6 bg-white rounded-lg shadow-xl">
-        <div className="flex items-center justify-between mb-6">
-          <h3 className="text-lg font-medium">Edit Book</h3>
-          <button 
-            className="text-gray-400 hover:text-gray-500" 
-            onClick={() => setShowEditModal(false)}
-          >
-            <span className="sr-only">Close</span>
-            <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-        {selectedBook && (
-          <BookForm
-            initialData={selectedBook}
-            onSubmit={async (formData: BookFormData) => {
-          try {
-            const response = await fetch(`/api/books/${selectedBook.id}`, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(formData),
-            });
-
-            if (response.ok) {
-              setAlert({ type: 'success', message: 'Book updated successfully' });
-              setShowEditModal(false);
-              setSelectedBook(null);
-              fetchBooks(pagination.page, searchTerm);
-            } else {
-              const error = await response.json();
-              throw new Error(error.error || 'Failed to update book');
-            }
-          } catch (error: any) {
-            setAlert({ type: 'error', message: error.message });
-          }
-            }}
-            onCancel={() => {
-          setShowEditModal(false);
-          setSelectedBook(null);
-            }}
-          />
-        )}
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-lg font-medium">Edit Book</h3>
+              <button className="text-gray-400 hover:text-gray-500" onClick={() => setShowEditModal(false)}>
+                <span className="sr-only">Close</span>×
+              </button>
+            </div>
+            <BookForm
+              initialData={selectedBook}
+              onSubmit={async (fd: BookFormData) => {
+                try {
+                  const res = await fetch(`/api/books/${selectedBook.id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(fd),
+                  });
+                  if (!res.ok) {
+                    const e = await res.json().catch(() => ({}));
+                    throw new Error(e?.error || 'Failed to update book');
+                  }
+                  setAlert({ type: 'success', message: 'Book updated successfully' });
+                  setShowEditModal(false);
+                  setSelectedBook(null);
+                  fetchBooks(pagination.page, searchTerm);
+                } catch (e: any) {
+                  setAlert({ type: 'error', message: e.message });
+                }
+              }}
+              onCancel={() => {
+                setShowEditModal(false);
+                setSelectedBook(null);
+              }}
+            />
           </div>
         </div>
       )}
@@ -369,14 +254,17 @@ const BookMasterList: React.FC = () => {
   );
 };
 
-// Book Form Component
+export default BookMasterList;
+
+/* BookForm */
+
 interface BookFormProps {
   initialData?: Partial<BookMaster>;
   onSubmit: (formData: BookFormData) => Promise<void>;
   onCancel: () => void;
 }
 
-const BookForm: React.FC<BookFormProps> = ({ initialData = {}, onSubmit, onCancel }) => {
+export const BookForm: React.FC<BookFormProps> = ({ initialData = {}, onSubmit, onCancel }) => {
   const [formData, setFormData] = useState<BookFormData>({
     libraryNumber: '',
     bookName: '',
@@ -387,92 +275,38 @@ const BookForm: React.FC<BookFormProps> = ({ initialData = {}, onSubmit, onCance
     edition: '',
     publisherName: '',
     editors: [],
-    genericTags: [],
-    specificTags: [],
-    ...initialData
-  });
+    ...initialData,
+  } as BookFormData);
 
-  const [genericSubjects, setGenericSubjects] = useState<GenericSubjectMaster[]>([]);
-  const [specificTags, setSpecificTags] = useState<TagMaster[]>([]);
-  const [loading, setLoading] = useState<boolean>(false);
+  const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<Partial<Record<keyof BookFormData, string>>>({});
-
-  // Fetch options for dropdowns
-  useEffect(() => {
-    const fetchOptions = async () => {
-      try {
-        const [genericResponse, specificResponse] = await Promise.all([
-          fetch('/api/subjects/generic?limit=100'),
-          fetch('/api/subjects/tags?limit=100')
-        ]);
-
-        const genericData = await genericResponse.json();
-        const specificData = await specificResponse.json();
-
-        setGenericSubjects(genericData.subjects || []);
-        setSpecificTags(specificData.tags || []);
-      } catch (error) {
-        console.error('Error fetching options:', error);
-      }
-    };
-
-    fetchOptions();
-  }, []);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: value }));
-    if (errors[name as keyof BookFormData]) {
-      setErrors(prev => ({ ...prev, [name]: undefined }));
-    }
+    setFormData((p) => ({ ...p, [name]: value }));
+    if (errors[name as keyof BookFormData]) setErrors((prev) => ({ ...prev, [name]: undefined }));
   };
 
-  const handleEditorChange = (index: number, field: string, value: string) => {
-    const updatedEditors = [...formData.editors];
-    updatedEditors[index] = { ...updatedEditors[index], [field]: value };
-    setFormData(prev => ({ ...prev, editors: updatedEditors }));
+  const setEditor = (idx: number, field: keyof BookFormData['editors'][number], val: string) => {
+    const next = [...formData.editors];
+    next[idx] = { ...next[idx], [field]: val };
+    setFormData((p) => ({ ...p, editors: next }));
   };
 
-  const addEditor = () => {
-    setFormData(prev => ({
-      ...prev,
-      editors: [...prev.editors, { name: '', role: 'Editor' }]
-    }));
+  const addEditor = () => setFormData((p) => ({ ...p, editors: [...p.editors, { name: '', role: 'Editor' }] }));
+  const removeEditor = (idx: number) => setFormData((p) => ({ ...p, editors: p.editors.filter((_, i) => i !== idx) }));
+
+  const validate = () => {
+    const e: Partial<Record<keyof BookFormData, string>> = {};
+    if (!formData.libraryNumber?.trim()) e.libraryNumber = 'Library number is required';
+    if (!formData.bookName?.trim()) e.bookName = 'Book name is required';
+    setErrors(e);
+    return Object.keys(e).length === 0;
   };
 
-  const removeEditor = (index: number) => {
-    setFormData(prev => ({
-      ...prev,
-      editors: prev.editors.filter((_, i) => i !== index)
-    }));
-  };
-
-  const handleTagChange = (type: 'genericTags' | 'specificTags', selectedValues: string[]) => {
-    setFormData(prev => ({ ...prev, [type]: selectedValues }));
-  };
-
-  const validateForm = (): boolean => {
-    const newErrors: Partial<Record<keyof BookFormData, string>> = {};
-
-    if (!formData.libraryNumber?.trim()) {
-      newErrors.libraryNumber = 'Library number is required';
-    }
-
-    if (!formData.bookName?.trim()) {
-      newErrors.bookName = 'Book name is required';
-    }
-
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    if (!validateForm()) {
-      return;
-    }
-
+  const submit = async (ev: React.FormEvent) => {
+    ev.preventDefault();
+    if (!validate()) return;
     setLoading(true);
     try {
       await onSubmit(formData);
@@ -484,284 +318,74 @@ const BookForm: React.FC<BookFormProps> = ({ initialData = {}, onSubmit, onCance
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <FormInput
-          label="Library Number"
-          name="libraryNumber"
-          value={formData.libraryNumber}
-          onChange={handleChange}
-          required
-          error={errors.libraryNumber}
-          placeholder="B009361"
-        />
-
-        <FormInput
-          label="Book Name"
-          name="bookName"
-          value={formData.bookName}
-          onChange={handleChange}
-          required
-          error={errors.bookName}
-          placeholder="Enter book name"
-        />
+        <FormInput label="Library Number" name="libraryNumber" value={formData.libraryNumber} onChange={handleChange} required error={errors.libraryNumber} placeholder="B009361" />
+        <FormInput label="Book Name" name="bookName" value={formData.bookName} onChange={handleChange} required error={errors.bookName} placeholder="Enter book name" />
       </div>
 
-      <FormInput
-        label="Book Summary"
-        name="bookSummary"
-        type="textarea"
-        rows={4}
-        value={formData.bookSummary}
-        onChange={handleChange}
-        placeholder="Enter a comprehensive book summary..."
-      />
+      <FormInput label="Book Summary" name="bookSummary" type="textarea" rows={4} value={formData.bookSummary} onChange={handleChange} placeholder="Enter a comprehensive book summary..." />
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <FormInput
-          label="Page Numbers"
-          name="pageNumbers"
-          value={formData.pageNumbers}
-          onChange={handleChange}
-          placeholder="1-272"
-        />
-
-        <FormInput
-          label="Grade"
-          name="grade"
-          value={formData.grade}
-          onChange={handleChange}
-          placeholder="A, B, C, etc."
-        />
-
-        <FormInput
-          label="Edition"
-          name="edition"
-          value={formData.edition}
-          onChange={handleChange}
-          placeholder="1st Edition"
-        />
+        <FormInput label="Page Numbers" name="pageNumbers" value={formData.pageNumbers} onChange={handleChange} placeholder="1-272" />
+        <FormInput label="Grade" name="grade" value={formData.grade} onChange={handleChange} placeholder="A, B, C" />
+        <FormInput label="Edition" name="edition" value={formData.edition} onChange={handleChange} placeholder="1st Edition" />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <FormInput
-          label="Publisher"
-          name="publisherName"
-          value={formData.publisherName}
-          onChange={handleChange}
-          placeholder="Publisher name"
-        />
-
-        <FormInput
-          label="Remark"
-          name="remark"
-          type="textarea"
-          rows={3}
-          value={formData.remark}
-          onChange={handleChange}
-          placeholder="Additional remarks..."
-        />
+        <FormInput label="Publisher" name="publisherName" value={formData.publisherName} onChange={handleChange} placeholder="Publisher name" />
+        <FormInput label="Remark" name="remark" type="textarea" rows={3} value={formData.remark} onChange={handleChange} placeholder="Additional remarks..." />
       </div>
 
-      {/* Editors Section */}
+      {/* Editors */}
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <label className="block text-sm font-medium text-gray-700">Editors</label>
-          <button
-            type="button"
-            onClick={addEditor}
-            className="text-sm text-blue-600 hover:text-blue-700"
-          >
+          <button type="button" onClick={addEditor} className="text-sm text-blue-600 hover:text-blue-700">
             + Add Editor
           </button>
         </div>
-        
-        {formData.editors?.map((editor, index) => (
-          <div key={index} className="flex items-center space-x-4 p-4 border border-gray-200 rounded-md">
+
+        {formData.editors.map((ed, i) => (
+          <div key={i} className="flex items-center space-x-4 p-4 border border-gray-200 rounded-md">
             <div className="flex-1">
               <input
                 type="text"
                 placeholder="Editor name"
-                value={editor.name || ''}
-                onChange={(e) => handleEditorChange(index, 'name', e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={ed.name || ''}
+                onChange={(e) => setEditor(i, 'name', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
               />
             </div>
-            <div className="w-32">
+            <div className="w-40">
               <select
-                value={editor.role || 'Editor'}
-                onChange={(e) => handleEditorChange(index, 'role', e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={ed.role || 'Editor'}
+                onChange={(e) => setEditor(i, 'role', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
               >
                 <option value="Editor">Editor</option>
                 <option value="Co-editor">Co-editor</option>
                 <option value="Chief Editor">Chief Editor</option>
+                <option value="Assistant Editor">Assistant Editor</option>
               </select>
             </div>
-            <button
-              type="button"
-              onClick={() => removeEditor(index)}
-              className="text-red-600 hover:text-red-700"
-            >
+            <button type="button" onClick={() => removeEditor(i)} className="text-red-600 hover:text-red-700">
               Remove
             </button>
           </div>
         ))}
       </div>
 
-      {/* Tags Section */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <MultiSelectTags
-          label="Generic Subjects"
-          options={genericSubjects}
-          selectedValues={formData.genericTags.map(it => it.id)}
-          onChange={(values) => handleTagChange('genericTags', values)}
-          placeholder="Select generic subjects..."
-        />
-
-        <MultiSelectTags
-          label="Specific Tags"
-          options={specificTags}
-          selectedValues={formData.specificTags.map(it => it.id)}
-          onChange={(values) => handleTagChange('specificTags', values)}
-          placeholder="Select specific tags..."
-        />
-      </div>
-
-      {/* Form Actions */}
       <div className="flex items-center justify-end space-x-4 pt-6 border-t border-gray-200">
-        <button
-          type="button"
-          onClick={onCancel}
-          className="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-        >
+        <button type="button" onClick={onCancel} className="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">
           Cancel
         </button>
         <button
-          onClick={handleSubmit}
+          onClick={submit}
           disabled={loading}
-          className="px-4 py-2 border border-transparent rounded-md text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="px-4 py-2 border border-transparent rounded-md text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50"
         >
-          {loading ? (
-            <>
-              <LoadingSpinner size="sm" className="mr-2" />
-              {initialData.id ? 'Updating...' : 'Creating...'}
-            </>
-          ) : (
-            initialData.id ? 'Update Book' : 'Create Book'
-          )}
+          {loading ? 'Saving...' : initialData.id ? 'Update Book' : 'Create Book'}
         </button>
       </div>
     </div>
   );
 };
-
-// Multi-select Tags Component
-interface MultiSelectTagsProps {
-  label: string;
-  options: Array<{ id: string; name: string }>;
-  selectedValues: string[];
-  onChange: (values: string[]) => void;
-  placeholder: string;
-}
-
-const MultiSelectTags: React.FC<MultiSelectTagsProps> = ({ 
-  label, 
-  options, 
-  selectedValues = [], 
-  onChange, 
-  placeholder 
-}) => {
-  const [isOpen, setIsOpen] = useState<boolean>(false);
-  const [searchTerm, setSearchTerm] = useState<string>('');
-
-  const filteredOptions = options.filter(option =>
-    option.name.toLowerCase().includes(searchTerm.toLowerCase())
-  );
-
-  const handleToggleOption = (optionId: string) => {
-    const newValues = selectedValues.includes(optionId)
-      ? selectedValues.filter(id => id !== optionId)
-      : [...selectedValues, optionId];
-    onChange(newValues);
-  };
-
-  const selectedNames = options
-    .filter(option => selectedValues.includes(option.id))
-    .map(option => option.name);
-
-  return (
-    <div className="space-y-1">
-      <label className="block text-sm font-medium text-gray-700">{label}</label>
-      <div className="relative">
-        <button
-          type="button"
-          onClick={() => setIsOpen(!isOpen)}
-          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-left bg-white"
-        >
-          {selectedNames.length > 0 ? (
-            <span className="text-sm">
-              {selectedNames.length === 1 
-                ? selectedNames[0] 
-                : `${selectedNames.length} selected`
-              }
-            </span>
-          ) : (
-            <span className="text-gray-500 text-sm">{placeholder}</span>
-          )}
-        </button>
-
-        {isOpen && (
-          <div className="absolute z-10 mt-1 w-full bg-white border border-gray-300 rounded-md shadow-lg">
-            <div className="p-2 border-b border-gray-200">
-              <input
-                type="text"
-                placeholder="Search..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-              />
-            </div>
-            <div className="max-h-48 overflow-y-auto">
-              {filteredOptions.map((option) => (
-                <label
-                  key={option.id}
-                  className="flex items-center px-3 py-2 hover:bg-gray-50 cursor-pointer"
-                >
-                  <input
-                    type="checkbox"
-                    checked={selectedValues.includes(option.id)}
-                    onChange={() => handleToggleOption(option.id)}
-                    className="mr-2 text-blue-600 focus:ring-blue-500"
-                  />
-                  <span className="text-sm">{option.name}</span>
-                </label>
-              ))}
-              {filteredOptions.length === 0 && (
-                <div className="px-3 py-2 text-sm text-gray-500">No options found</div>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Selected tags display */}
-      {selectedNames.length > 0 && (
-        <div className="flex flex-wrap gap-1 mt-2">
-          {selectedNames.slice(0, 5).map((name, index) => (
-            <span
-              key={index}
-              className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800"
-            >
-              {name}
-            </span>
-          ))}
-          {selectedNames.length > 5 && (
-            <span className="text-xs text-gray-500">+{selectedNames.length - 5} more</span>
-          )}
-        </div>
-      )}
-    </div>
-  );
-};
-
-export default BookMasterList;
-export { BookForm, MultiSelectTags };

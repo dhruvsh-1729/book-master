@@ -21,7 +21,7 @@ const SubjectsPage: React.FC = () => {
 
   const fetchGenericSubjects = async () => {
     try {
-      const response = await fetch('/api/subjects/generic?limit=100');
+      const response = await fetch('/api/subjects/generic?limit=500');
       const data = await response.json();
       setGenericSubjects(data.subjects || []);
     } catch (error) {
@@ -31,7 +31,7 @@ const SubjectsPage: React.FC = () => {
 
   const fetchSpecificTags = async () => {
     try {
-      const response = await fetch('/api/subjects/tags?limit=100');
+      const response = await fetch('/api/subjects/tags?limit=500');
       const data = await response.json();
       setSpecificTags(data.tags || []);
     } catch (error) {
@@ -234,7 +234,7 @@ const SubjectsPage: React.FC = () => {
             onClick={() => setShowModal(false)}
           />
           {/* Panel */}
-          <div className="relative z-10 w-full max-w-md mx-4 bg-white rounded-lg shadow-xl">
+          <div className="relative z-10 w-[70vw] mx-4 bg-white rounded-lg shadow-xl">
             <div className="flex items-center justify-between px-6 py-4 border-b">
               <h3 id="subject-modal-title" className="text-lg font-medium text-gray-900">
                 {`${editingItem ? 'Edit' : 'Add'} ${activeTab === 'generic' ? 'Generic Subject' : 'Specific Tag'}`}

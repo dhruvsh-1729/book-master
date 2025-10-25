@@ -1,15 +1,14 @@
 // components/BookDetailWithTransactions.tsx
-
 import React, { useState, useEffect } from 'react';
-import { FileText, Plus, Book, Tag, Globe, Edit, ArrowLeft } from 'lucide-react';
-import { 
-  DataTable, 
-  Modal, 
-  FormInput, 
-  Alert, 
-  Card, 
+import { FileText, Plus, Book, ArrowLeft } from 'lucide-react';
+import {
+  DataTable,
+  Modal,
+  FormInput,
+  Alert,
+  Card,
   Breadcrumb,
-  LoadingSpinner 
+  LoadingSpinner,
 } from './CoreComponents';
 import {
   BookMaster,
@@ -22,10 +21,9 @@ import {
   AlertProps,
   MultilingualText,
   Language,
-  LanguageCode
+  LanguageCode,
 } from '../types';
 
-// Book Detail with Summary Transactions
 interface BookDetailWithTransactionsProps {
   bookId: string;
 }
@@ -37,7 +35,7 @@ const BookDetailWithTransactions: React.FC<BookDetailWithTransactionsProps> = ({
     page: 1,
     limit: 20,
     total: 0,
-    pages: 0
+    pages: 0,
   });
   const [loading, setLoading] = useState<boolean>(true);
   const [searchTerm, setSearchTerm] = useState<string>('');
@@ -46,17 +44,15 @@ const BookDetailWithTransactions: React.FC<BookDetailWithTransactionsProps> = ({
   const [selectedTransaction, setSelectedTransaction] = useState<SummaryTransaction | null>(null);
   const [alert, setAlert] = useState<AlertProps | null>(null);
 
-  // Fetch book details and transactions
   const fetchBookDetails = async () => {
     setLoading(true);
     try {
-      const response = await fetch(`/api/books/${bookId}`);
+      const response = await fetch(`/api/books/${bookId}?includeTransactions=true`);
       if (!response.ok) throw new Error('Book not found');
-      
-      const data: BookMaster = await response.json();
+      const data: BookMaster & { summaryTransactions?: SummaryTransaction[] } = await response.json();
       setBook(data);
       setTransactions(data.summaryTransactions || []);
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error fetching book:', error);
       setAlert({ type: 'error', message: 'Failed to fetch book details' });
     } finally {
@@ -64,129 +60,91 @@ const BookDetailWithTransactions: React.FC<BookDetailWithTransactionsProps> = ({
     }
   };
 
-  // Fetch transactions with pagination and search
-  const fetchTransactions = async (page: number = 1, search: string = '') => {
+  const fetchTransactions = async (page = 1, search = '') => {
     try {
-      const response = await fetch(`/api/transactions/book/${bookId}?page=${page}&limit=20&search=${search}`);
-      const data = await response.json();
-      setTransactions(data.transactions);
+      const res = await fetch(`/api/transactions/book/${bookId}?page=${page}&limit=20&search=${encodeURIComponent(search)}`);
+      const data = await res.json();
+      setTransactions(data.transactions || []);
       setPagination(data.pagination);
-      if (!book) setBook(data.book); // Set book info if not already set
-    } catch (error: any) {
+      if (!book) setBook(data.book);
+    } catch (error) {
       console.error('Error fetching transactions:', error);
       setAlert({ type: 'error', message: 'Failed to fetch transactions' });
     }
   };
 
   useEffect(() => {
-    if (bookId) {
-      fetchBookDetails();
-    }
+    if (bookId) fetchBookDetails();
   }, [bookId]);
 
-  // Handle search
-  const handleSearch = (search: string) => {
-    setSearchTerm(search);
-    fetchTransactions(1, search);
+  const handleSearch = (q: string) => {
+    setSearchTerm(q);
+    fetchTransactions(1, q);
   };
-
-  // Handle page change
-  const handlePageChange = (page: number) => {
-    fetchTransactions(page, searchTerm);
-  };
-
-  // Handle edit transaction
-  const handleEditTransaction = (transaction: SummaryTransaction) => {
-    setSelectedTransaction(transaction);
+  const handlePageChange = (page: number) => fetchTransactions(page, searchTerm);
+  const handleEditTransaction = (t: SummaryTransaction) => {
+    setSelectedTransaction(t);
     setShowEditModal(true);
   };
-
-  // Handle delete transaction
-  const handleDeleteTransaction = async (transaction: SummaryTransaction) => {
-    if (!confirm(`Are you sure you want to delete transaction #${transaction.srNo}?`)) {
-      return;
-    }
-
+  const handleDeleteTransaction = async (t: SummaryTransaction) => {
+    if (!confirm(`Delete transaction #${t.srNo}?`)) return;
     try {
-      const response = await fetch(`/api/transactions/${transaction.id}`, {
-        method: 'DELETE',
-      });
-
-      if (response.ok) {
-        setAlert({ type: 'success', message: 'Transaction deleted successfully' });
-        fetchTransactions(pagination.page, searchTerm);
-      } else {
-        throw new Error('Failed to delete transaction');
-      }
-    } catch (error: any) {
-      console.error('Error deleting transaction:', error);
-      setAlert({ type: 'error', message: 'Failed to delete transaction' });
+      const res = await fetch(`/api/transactions/${t.id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Failed to delete transaction');
+      setAlert({ type: 'success', message: 'Transaction deleted successfully' });
+      fetchTransactions(pagination.page, searchTerm);
+    } catch (e: any) {
+      setAlert({ type: 'error', message: e.message || 'Failed to delete transaction' });
     }
   };
 
-  // Table columns for transactions
   const columns: DataTableColumn<SummaryTransaction>[] = [
     {
       key: 'srNo',
       label: 'Sr No.',
-      render: (value: number) => (
-        <span className="font-mono text-sm bg-gray-100 px-2 py-1 rounded">
-          {value}
-        </span>
-      )
+      render: (v: number) => <span className="font-mono text-sm bg-gray-100 px-2 py-1 rounded">{v}</span>,
     },
     {
       key: 'genericSubject',
       label: 'Generic Subject',
-      render: (value: GenericSubjectMaster | null) => value ? (
-        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-          {value.name}
-        </span>
-      ) : (
-        <span className="text-gray-400 text-xs">Not set</span>
-      )
+      render: (v: GenericSubjectMaster | null) =>
+        v ? (
+          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+            {v.name}
+          </span>
+        ) : (
+          <span className="text-gray-400 text-xs">Not set</span>
+        ),
     },
     {
       key: 'specificSubject',
       label: 'Specific Subject',
-      render: (value: TagMaster | null) => value ? (
-        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-          {value.name}
-        </span>
-      ) : (
-        <span className="text-gray-400 text-xs">Not set</span>
-      )
+      render: (v: TagMaster | null) =>
+        v ? (
+          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
+            {v.name}
+          </span>
+        ) : (
+          <span className="text-gray-400 text-xs">Not set</span>
+        ),
     },
     {
       key: 'title',
       label: 'Title/Heading',
-      render: (value: string | null, row: SummaryTransaction) => (
+      render: (v: string | null, row) => (
         <div className="max-w-xs">
-          <div className="font-medium text-gray-900 truncate">
-            {value || 'No title'}
-          </div>
-          {row.keywords && (
-            <div className="text-sm text-gray-500 truncate">
-              Keywords: {row.keywords.substring(0, 50)}...
-            </div>
-          )}
+          <div className="font-medium text-gray-900 truncate">{v || 'No title'}</div>
+          {row.keywords && <div className="text-sm text-gray-500 truncate">Keywords: {row.keywords}</div>}
         </div>
-      )
+      ),
     },
-    {
-      key: 'pageNo',
-      label: 'Page No.',
-      render: (value: string | null) => value || '-'
-    },
+    { key: 'pageNo', label: 'Page No.', render: (v: string | null) => v || '-' },
     {
       key: 'informationRating',
       label: 'Rating',
-      render: (value: string | null) => value ? (
-        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
-          {value}
-        </span>
-      ) : '-'
-    }
+      render: (v: string | null) =>
+        v ? <span className="inline-flex px-2 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">{v}</span> : '-',
+    },
   ];
 
   if (loading) {
@@ -207,23 +165,10 @@ const BookDetailWithTransactions: React.FC<BookDetailWithTransactionsProps> = ({
 
   return (
     <div className="space-y-6">
-      <Breadcrumb 
-        items={[
-          { label: 'Dashboard', href: '/' },
-          { label: 'Book Master', href: '/books' },
-          { label: book.bookName }
-        ]} 
-      />
+      <Breadcrumb items={[{ label: 'Dashboard', href: '/' }, { label: 'Book Master', href: '/books' }, { label: book.bookName }]} />
 
-      {alert && (
-        <Alert
-          type={alert.type}
-          message={alert.message}
-          onClose={() => setAlert(null)}
-        />
-      )}
+      {alert && <Alert type={alert.type} message={alert.message} onClose={() => setAlert(null)} />}
 
-      {/* Book Information Card */}
       <Card
         title="Book Information"
         icon={Book}
@@ -243,13 +188,11 @@ const BookDetailWithTransactions: React.FC<BookDetailWithTransactionsProps> = ({
               <h3 className="text-lg font-semibold text-gray-900">{book.bookName}</h3>
               <p className="text-sm text-gray-600">Library: {book.libraryNumber}</p>
             </div>
-            
+
             {book.bookSummary && (
               <div>
                 <h4 className="text-sm font-medium text-gray-700 mb-2">Summary</h4>
-                <p className="text-sm text-gray-600 leading-relaxed">
-                  {book.bookSummary}
-                </p>
+                <p className="text-sm text-gray-600 leading-relaxed">{book.bookSummary}</p>
               </div>
             )}
 
@@ -287,44 +230,10 @@ const BookDetailWithTransactions: React.FC<BookDetailWithTransactionsProps> = ({
               <div>
                 <h4 className="text-sm font-medium text-gray-700 mb-2">Editors</h4>
                 <div className="space-y-1">
-                  {book.editors.map((editor, index) => (
-                    <div key={index} className="text-sm text-gray-600">
-                      {editor.name} - <span className="text-gray-500">{editor.role}</span>
+                  {book.editors.map((e) => (
+                    <div key={e.id} className="text-sm text-gray-600">
+                      {e.name} {e.role ? <span className="text-gray-500">— {e.role}</span> : null}
                     </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Generic Tags */}
-            {book.genericTags && book.genericTags.length > 0 && (
-              <div>
-                <h4 className="text-sm font-medium text-gray-700 mb-2">Generic Subjects</h4>
-                <div className="flex flex-wrap gap-2">
-                  {book.genericTags.map((tag, index) => (
-                    <span
-                      key={index}
-                      className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800"
-                    >
-                      {tag.genericSubject.name}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Specific Tags */}
-            {book.specificTags && book.specificTags.length > 0 && (
-              <div>
-                <h4 className="text-sm font-medium text-gray-700 mb-2">Specific Tags</h4>
-                <div className="flex flex-wrap gap-2">
-                  {book.specificTags.map((tag, index) => (
-                    <span
-                      key={index}
-                      className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800"
-                    >
-                      {tag.tag.name}
-                    </span>
                   ))}
                 </div>
               </div>
@@ -333,14 +242,13 @@ const BookDetailWithTransactions: React.FC<BookDetailWithTransactionsProps> = ({
         </div>
       </Card>
 
-      {/* Summary Transactions */}
       <Card
         title="Summary Transactions"
         icon={FileText}
         headerActions={
           <button
             onClick={() => setShowCreateModal(true)}
-            className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+            className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700"
           >
             <Plus className="h-4 w-4 mr-2" />
             Add Transaction
@@ -355,75 +263,61 @@ const BookDetailWithTransactions: React.FC<BookDetailWithTransactionsProps> = ({
           loading={loading}
           onEdit={handleEditTransaction}
           onDelete={handleDeleteTransaction}
-          searchable={true}
+          searchable
           onSearch={handleSearch}
           searchPlaceholder="Search transactions..."
         />
       </Card>
 
-      {/* Create Transaction Modal */}
-      <Modal
-        isOpen={showCreateModal}
-        onClose={() => setShowCreateModal(false)}
-        title="Add New Transaction"
-        size="xl"
-      >
+      {/* Create */}
+      <Modal isOpen={showCreateModal} onClose={() => setShowCreateModal(false)} title="Add New Transaction" size="xl">
         <TransactionForm
           bookId={bookId}
-          onSubmit={async (formData: TransactionFormData) => {
+          onSubmit={async (fd) => {
             try {
-              const response = await fetch('/api/transactions', {
+              const res = await fetch('/api/transactions', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ ...formData, bookId }),
+                body: JSON.stringify({ ...fd, bookId }),
               });
-
-              if (response.ok) {
-                setAlert({ type: 'success', message: 'Transaction created successfully' });
-                setShowCreateModal(false);
-                fetchTransactions(pagination.page, searchTerm);
-              } else {
-                const error = await response.json();
-                throw new Error(error.error || 'Failed to create transaction');
+              if (!res.ok) {
+                const e = await res.json().catch(() => ({}));
+                throw new Error(e?.error || 'Failed to create transaction');
               }
-            } catch (error: any) {
-              setAlert({ type: 'error', message: error.message });
+              setAlert({ type: 'success', message: 'Transaction created successfully' });
+              setShowCreateModal(false);
+              fetchTransactions(pagination.page, searchTerm);
+            } catch (e: any) {
+              setAlert({ type: 'error', message: e.message });
             }
           }}
           onCancel={() => setShowCreateModal(false)}
         />
       </Modal>
 
-      {/* Edit Transaction Modal */}
-      <Modal
-        isOpen={showEditModal}
-        onClose={() => setShowEditModal(false)}
-        title="Edit Transaction"
-        size="xl"
-      >
+      {/* Edit */}
+      <Modal isOpen={showEditModal} onClose={() => setShowEditModal(false)} title="Edit Transaction" size="xl">
         {selectedTransaction && (
           <TransactionForm
             bookId={bookId}
             initialData={selectedTransaction}
-            onSubmit={async (formData: TransactionFormData) => {
+            onSubmit={async (fd) => {
               try {
-                const response = await fetch(`/api/transactions/${selectedTransaction.id}`, {
+                const res = await fetch(`/api/transactions/${selectedTransaction.id}`, {
                   method: 'PUT',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify(formData),
+                  body: JSON.stringify(fd),
                 });
-
-                if (response.ok) {
-                  setAlert({ type: 'success', message: 'Transaction updated successfully' });
-                  setShowEditModal(false);
-                  setSelectedTransaction(null);
-                  fetchTransactions(pagination.page, searchTerm);
-                } else {
-                  const error = await response.json();
-                  throw new Error(error.error || 'Failed to update transaction');
+                if (!res.ok) {
+                  const e = await res.json().catch(() => ({}));
+                  throw new Error(e?.error || 'Failed to update transaction');
                 }
-              } catch (error: any) {
-                setAlert({ type: 'error', message: error.message });
+                setAlert({ type: 'success', message: 'Transaction updated successfully' });
+                setShowEditModal(false);
+                setSelectedTransaction(null);
+                fetchTransactions(pagination.page, searchTerm);
+              } catch (e: any) {
+                setAlert({ type: 'error', message: e.message });
               }
             }}
             onCancel={() => {
@@ -437,7 +331,10 @@ const BookDetailWithTransactions: React.FC<BookDetailWithTransactionsProps> = ({
   );
 };
 
-// Transaction Form Component
+export default BookDetailWithTransactions;
+
+/* TransactionForm (inner component) */
+
 interface TransactionFormProps {
   bookId: string;
   initialData?: Partial<SummaryTransaction>;
@@ -445,43 +342,29 @@ interface TransactionFormProps {
   onCancel: () => void;
 }
 
-const TransactionForm: React.FC<TransactionFormProps> = ({ 
-  bookId, 
-  initialData = {}, 
-  onSubmit, 
-  onCancel 
+export const TransactionForm: React.FC<TransactionFormProps> = ({
+  bookId,
+  initialData = {},
+  onSubmit,
+  onCancel,
 }) => {
-  // Process relevantParagraph from initialData
-  const initialRelevantParagraph = initialData.relevantParagraph 
-    ? (typeof initialData.relevantParagraph === 'object' 
-      ? initialData.relevantParagraph as MultilingualText
-      : {
-          english: (initialData.relevantParagraph as any) || '',
-          hindi: '',
-          gujarati: '',
-          sanskrit: ''
-        })
-    : {
-        english: '',
-        hindi: '',
-        gujarati: '',
-        sanskrit: ''
-      };
-  
+  const initialRelevant: MultilingualText =
+    initialData.relevantParagraph && typeof initialData.relevantParagraph === 'object'
+      ? (initialData.relevantParagraph as MultilingualText)
+      : { english: initialData.relevantParagraph ? String(initialData.relevantParagraph) : '', hindi: '', gujarati: '', sanskrit: '' };
+
   const [formData, setFormData] = useState<TransactionFormData>({
-    srNo: 0,
-    genericSubjectId: '',
-    specificSubjectId: '',
-    title: '',
-    keywords: '',
-    paragraphNo: '',
-    pageNo: '',
-    informationRating: '',
-    remark: '',
+    srNo: typeof initialData.srNo === 'number' ? initialData.srNo : 0,
+    genericSubjectId: initialData.genericSubjectId || '',
+    specificSubjectId: initialData.specificSubjectId || '',
+    title: initialData.title || '',
+    keywords: initialData.keywords || '',
+    paragraphNo: initialData.paragraphNo || '',
+    pageNo: initialData.pageNo || '',
+    informationRating: initialData.informationRating || '',
+    remark: initialData.remark || '',
     bookId,
-    ...initialData,
-    // Use the processed relevantParagraph
-    relevantParagraph: initialRelevantParagraph
+    relevantParagraph: initialRelevant,
   });
 
   const [genericSubjects, setGenericSubjects] = useState<GenericSubjectMaster[]>([]);
@@ -494,73 +377,53 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
     { code: 'english', name: 'English', icon: '🇺🇸' },
     { code: 'hindi', name: 'Hindi', icon: '🇮🇳' },
     { code: 'gujarati', name: 'Gujarati', icon: '🇮🇳' },
-    { code: 'sanskrit', name: 'Sanskrit', icon: '🕉️' }
+    { code: 'sanskrit', name: 'Sanskrit', icon: '🕉️' },
   ];
 
-  // Fetch options for dropdowns
   useEffect(() => {
-    const fetchOptions = async () => {
+    const loadOptions = async () => {
       try {
-        const [genericResponse, specificResponse] = await Promise.all([
-          fetch('/api/subjects/generic?limit=100'),
-          fetch('/api/subjects/tags?limit=100')
+        const [g, t] = await Promise.all([
+          fetch('/api/subjects/generic-subjects?limit=100'),
+          fetch('/api/subjects/tags?limit=100'),
         ]);
-
-        const genericData = await genericResponse.json();
-        const specificData = await specificResponse.json();
-
-        setGenericSubjects(genericData.subjects || []);
-        setSpecificTags(specificData.tags || []);
-      } catch (error) {
-        console.error('Error fetching options:', error);
+        const gJson = await g.json();
+        const tJson = await t.json();
+        setGenericSubjects(gJson.subjects || []);
+        setSpecificTags(tJson.tags || []);
+      } catch (e) {
+        console.error('Failed to load dropdowns', e);
       }
     };
-
-    fetchOptions();
+    loadOptions();
   }, []);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: name === 'srNo' ? parseInt(value) || 0 : value }));
-    if (errors[name as keyof TransactionFormData]) {
-      setErrors(prev => ({ ...prev, [name]: undefined }));
-    }
+    setFormData((p) => ({ ...p, [name]: name === 'srNo' ? parseInt(value || '0', 10) || 0 : value }));
+    if (errors[name as keyof TransactionFormData]) setErrors((prev) => ({ ...prev, [name]: undefined }));
   };
 
-  const handleParagraphChange = (language: LanguageCode, value: string) => {
-    setFormData(prev => ({
-      ...prev,
-      relevantParagraph: {
-        ...prev.relevantParagraph,
-        [language]: value
-      }
-    }));
+  const handleParagraphChange = (lang: LanguageCode, value: string) => {
+    setFormData((p) => ({ ...p, relevantParagraph: { ...p.relevantParagraph, [lang]: value } }));
   };
 
-  const validateForm = (): boolean => {
-    const newErrors: Partial<Record<keyof TransactionFormData, string>> = {};
-
-    if (!formData.srNo || formData.srNo === 0) {
-      newErrors.srNo = 'Serial number is required';
-    }
-
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
+  const validate = () => {
+    const e: Partial<Record<keyof TransactionFormData, string>> = {};
+    if (!formData.srNo || formData.srNo <= 0) e.srNo = 'Serial number is required';
+    setErrors(e);
+    return Object.keys(e).length === 0;
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    if (!validateForm()) {
-      return;
-    }
-
+  const submit = async (ev: React.FormEvent) => {
+    ev.preventDefault();
+    if (!validate()) return;
     setLoading(true);
     try {
       await onSubmit({
         ...formData,
         genericSubjectId: formData.genericSubjectId || undefined,
-        specificSubjectId: formData.specificSubjectId || undefined
+        specificSubjectId: formData.specificSubjectId || undefined,
       });
     } finally {
       setLoading(false);
@@ -570,67 +433,34 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <FormInput
-          label="Serial Number"
-          name="srNo"
-          type="number"
-          value={formData.srNo}
-          onChange={handleChange}
-          required
-          error={errors.srNo}
-          placeholder="1"
-        />
-
+        <FormInput label="Serial Number" name="srNo" type="number" value={formData.srNo} onChange={handleChange} required error={errors.srNo} placeholder="1" />
         <FormInput
           label="Generic Subject"
           name="genericSubjectId"
           type="select"
           value={formData.genericSubjectId}
           onChange={handleChange}
-          options={genericSubjects.map(subject => ({
-            value: subject.id,
-            label: subject.name
-          }))}
+          options={genericSubjects.map((s) => ({ value: s.id, label: s.name }))}
           placeholder="Select generic subject..."
         />
-
         <FormInput
           label="Specific Subject"
           name="specificSubjectId"
           type="select"
           value={formData.specificSubjectId}
           onChange={handleChange}
-          options={specificTags.map(tag => ({
-            value: tag.id,
-            label: tag.name
-          }))}
+          options={specificTags.map((t) => ({ value: t.id, label: t.name }))}
           placeholder="Select specific subject..."
         />
       </div>
 
-      <FormInput
-        label="Title / Heading"
-        name="title"
-        value={formData.title}
-        onChange={handleChange}
-        placeholder="Enter title or heading..."
-      />
+      <FormInput label="Title / Heading" name="title" value={formData.title} onChange={handleChange} placeholder="Enter title or heading..." />
+      <FormInput label="Keywords" name="keywords" value={formData.keywords} onChange={handleChange} placeholder="Enter relevant keywords..." />
 
-      <FormInput
-        label="Keywords"
-        name="keywords"
-        value={formData.keywords}
-        onChange={handleChange}
-        placeholder="Enter relevant keywords..."
-      />
-
-      {/* Multilingual Paragraph Section */}
+      {/* Multilingual paragraph */}
       <div className="space-y-4">
-        <label className="block text-sm font-medium text-gray-700">
-          Relevant Paragraph / Excerpts
-        </label>
-        
-        {/* Language Tabs */}
+        <label className="block text-sm font-medium text-gray-700">Relevant Paragraph / Excerpts</label>
+
         <div className="border-b border-gray-200">
           <nav className="-mb-px flex space-x-8">
             {languages.map((lang) => (
@@ -639,9 +469,7 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
                 type="button"
                 onClick={() => setActiveLanguage(lang.code)}
                 className={`py-2 px-1 border-b-2 font-medium text-sm flex items-center space-x-2 ${
-                  activeLanguage === lang.code
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  activeLanguage === lang.code ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
                 }`}
               >
                 <span>{lang.icon}</span>
@@ -651,20 +479,16 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
           </nav>
         </div>
 
-        {/* Language Content */}
         <div className="space-y-4">
           {languages.map((lang) => (
-            <div
-              key={lang.code}
-              className={activeLanguage === lang.code ? 'block' : 'hidden'}
-            >
+            <div key={lang.code} className={activeLanguage === lang.code ? 'block' : 'hidden'}>
               <textarea
                 rows={6}
                 placeholder={`Enter relevant paragraph in ${lang.name}...`}
                 value={formData.relevantParagraph[lang.code] || ''}
                 onChange={(e) => handleParagraphChange(lang.code, e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                dir={lang.code === 'hindi' || lang.code === 'gujarati' || lang.code === 'sanskrit' ? 'auto' : 'ltr'}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                dir={['hindi', 'gujarati', 'sanskrit'].includes(lang.code) ? 'auto' : 'ltr'}
               />
             </div>
           ))}
@@ -672,22 +496,8 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <FormInput
-          label="Paragraph Number"
-          name="paragraphNo"
-          value={formData.paragraphNo}
-          onChange={handleChange}
-          placeholder="e.g., P1, Para 1"
-        />
-
-        <FormInput
-          label="Page Number"
-          name="pageNo"
-          value={formData.pageNo}
-          onChange={handleChange}
-          placeholder="e.g., 45, 45-46"
-        />
-
+        <FormInput label="Paragraph Number" name="paragraphNo" value={formData.paragraphNo} onChange={handleChange} placeholder="e.g., P1" />
+        <FormInput label="Page Number" name="pageNo" value={formData.pageNo} onChange={handleChange} placeholder="e.g., 45" />
         <FormInput
           label="Information Rating"
           name="informationRating"
@@ -697,49 +507,30 @@ const TransactionForm: React.FC<TransactionFormProps> = ({
           options={[
             { value: 'High', label: 'High' },
             { value: 'Medium', label: 'Medium' },
-            { value: 'Low', label: 'Low' }
+            { value: 'Low', label: 'Low' },
           ]}
           placeholder="Select rating..."
         />
       </div>
 
-      <FormInput
-        label="Remark"
-        name="remark"
-        type="textarea"
-        rows={3}
-        value={formData.remark}
-        onChange={handleChange}
-        placeholder="Additional remarks or notes..."
-      />
+      <FormInput label="Remark" name="remark" type="textarea" rows={3} value={formData.remark} onChange={handleChange} placeholder="Additional remarks..." />
 
-      {/* Form Actions */}
       <div className="flex items-center justify-end space-x-4 pt-6 border-t border-gray-200">
         <button
           type="button"
           onClick={onCancel}
-          className="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+          className="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50"
         >
           Cancel
         </button>
         <button
-          onClick={handleSubmit}
+          onClick={submit}
           disabled={loading}
-          className="px-4 py-2 border border-transparent rounded-md text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="px-4 py-2 border border-transparent rounded-md text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50"
         >
-          {loading ? (
-            <>
-              <LoadingSpinner size="sm" className="mr-2" />
-              {initialData.id ? 'Updating...' : 'Creating...'}
-            </>
-          ) : (
-            initialData.id ? 'Update Transaction' : 'Create Transaction'
-          )}
+          {loading ? 'Saving...' : initialData.id ? 'Update Transaction' : 'Create Transaction'}
         </button>
       </div>
     </div>
   );
 };
-
-export default BookDetailWithTransactions;
-export { TransactionForm };
