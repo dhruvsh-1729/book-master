@@ -1,6 +1,6 @@
-import { Prisma, BookMaster } from '@prisma/client';
-import { BaseRepository } from './base.repository';
-import { ApiError } from '../utils/api-helpers';
+import { Prisma, BookMaster } from "@prisma/client";
+import { BaseRepository } from "./base.repository";
+import { ApiError } from "../utils/api-helpers";
 
 export interface BookFilters {
   userId?: string;
@@ -8,8 +8,10 @@ export interface BookFilters {
   libraryNumber?: string;
   publisherName?: string;
   grade?: string;
-  genericTagIds?: string[];
-  specificTagIds?: string[];
+
+  /** New schema: filter through transactions relation */
+  genericSubjectIds?: string[];
+  specificSubjectIds?: string[];
 }
 
 export interface BookCreateData {
@@ -22,264 +24,170 @@ export interface BookCreateData {
   edition?: string;
   publisherName?: string;
   userId: string;
+
+  /** Related rows to create */
   editors?: Array<{ name: string; role?: string }>;
-  genericTags?: string[];
-  specificTags?: string[];
 }
 
 export class BookRepository extends BaseRepository {
-  private readonly defaultIncludes = {
-    user: {
-      select: {
-        id: true,
-        name: true,
-        email: true
-      }
-    },
+  private readonly defaultIncludes: Prisma.BookMasterInclude = {
+    user: { select: { id: true, name: true, email: true } },
     _count: {
       select: {
-        summaryTransactions: true
-      }
-    }
-  } satisfies Prisma.BookMasterInclude;
-
-  private readonly detailIncludes = {
-    ...this.defaultIncludes,
-    editors: true,
-    genericTags: {
-      include: {
-        genericSubject: {
-          select: {
-            id: true,
-            name: true,
-            description: true
-          }
-        }
-      }
+        /** relation name in schema */
+        transactions: true,
+        editor: true,
+      },
     },
-    specificTags: {
-      include: {
-        tag: {
-          select: {
-            id: true,
-            name: true,
-            category: true
-          }
-        }
-      }
-    }
-  } satisfies Prisma.BookMasterInclude;
+  };
 
+  private readonly detailIncludes: Prisma.BookMasterInclude = {
+    ...this.defaultIncludes,
+    /** relation name is `editor` in BookMaster */
+    editor: true,
+    /** relation name is `transactions` in BookMaster */
+    transactions: {
+      include: {
+        /** relation names inside SummaryTransaction */
+        genericSubject: true,   // GenericSubjectMaster?
+        specificSubject: true,  // TagMaster?
+        user: { select: { id: true, name: true, email: true } },
+      },
+      orderBy: { srNo: "asc" },
+    },
+  };
+
+  /* ============================ FIND MANY ============================ */
   async findMany(
     filters: BookFilters,
     page: number,
     limit: number,
     includeDetails = false
   ) {
-    const skip = (page - 1) * limit;
+    const skip = Math.max(0, (page - 1) * limit);
     const where = this.buildWhereClause(filters);
-    
+
     const [books, total] = await this.prisma.$transaction([
       this.prisma.bookMaster.findMany({
         where,
         include: includeDetails ? this.detailIncludes : this.defaultIncludes,
         skip,
         take: limit,
-        orderBy: { createdAt: 'desc' }
+        orderBy: { createdAt: "desc" },
       }),
-      this.prisma.bookMaster.count({ where })
+      this.prisma.bookMaster.count({ where }),
     ]);
 
     return { books, total };
   }
 
-  async findById(id: string, userId?: string, includeTransactions = false) {
+  /* ============================ FIND BY ID ============================ */
+  async findById(
+    id: string,
+    userId?: string,
+    includeTransactions = false
+  ) {
     const where: Prisma.BookMasterWhereInput = { id };
     if (userId) where.userId = userId;
 
     const book = await this.prisma.bookMaster.findFirst({
       where,
-      include: {
-        ...this.detailIncludes,
-        ...(includeTransactions && {
-          summaryTransactions: {
-            include: {
-              genericSubject: true,
-              specificSubject: true
-            },
-            orderBy: { srNo: 'asc' as const }
-          }
-        })
-      }
+      include: includeTransactions
+        ? this.detailIncludes
+        : {
+            ...this.defaultIncludes,
+            editor: true, // handy basic details even when not loading transactions
+          },
     });
 
     if (!book) {
-      throw new ApiError(404, 'Book not found', 'BOOK_NOT_FOUND');
+      throw new ApiError(404, "Book not found", "BOOK_NOT_FOUND");
     }
-
     return book;
   }
 
+  /* ============================ CREATE ============================ */
   async create(data: BookCreateData) {
-    const { editors, genericTags, specificTags, ...bookData } = data;
+    const { editors, ...bookData } = data;
 
-    // Check for duplicate library number
+    // Unique per user on (libraryNumber,userId)
     const existing = await this.prisma.bookMaster.findFirst({
-      where: {
-        libraryNumber: bookData.libraryNumber,
-        userId: bookData.userId
-      }
+      where: { libraryNumber: bookData.libraryNumber, userId: bookData.userId },
+      select: { id: true },
     });
-
     if (existing) {
-      throw new ApiError(400, 'Library number already exists', 'DUPLICATE_LIBRARY_NUMBER');
+      throw new ApiError(400, "Library number already exists", "DUPLICATE_LIBRARY_NUMBER");
     }
 
     return await this.prisma.$transaction(async (tx) => {
-      // Create book
-      const book = await tx.bookMaster.create({
-        data: bookData
-      });
-
-      // Create related entities in parallel
-      const promises = [];
+      const book = await tx.bookMaster.create({ data: bookData });
 
       if (editors?.length) {
-        promises.push(
-          tx.bookEditor.createMany({
-            data: editors.map(e => ({
-              bookId: book.id,
-              name: e.name,
-              role: e.role || 'Editor'
-            }))
-          })
-        );
+        await tx.bookEditor.createMany({
+          data: editors.map((e) => ({
+            bookId: book.id,
+            name: e.name,
+            role: e.role || "Editor",
+          })),
+        });
       }
 
-      if (genericTags?.length) {
-        promises.push(
-          tx.bookGenericTag.createMany({
-            data: genericTags.map(tagId => ({
-              bookId: book.id,
-              genericSubjectId: tagId
-            })),
-          })
-        );
-      }
-
-      if (specificTags?.length) {
-        promises.push(
-          tx.bookSpecificTag.createMany({
-            data: specificTags.map(tagId => ({
-              bookId: book.id,
-              tagId
-            })),
-          })
-        );
-      }
-
-      await Promise.all(promises);
-
-      // Return complete book
       return await tx.bookMaster.findUnique({
         where: { id: book.id },
-        include: this.detailIncludes
+        include: this.detailIncludes,
       });
     });
   }
 
+  /* ============================ UPDATE ============================ */
   async update(id: string, userId: string, data: Partial<BookCreateData>) {
-    // Verify ownership
+    // ownership + existence
     await this.findById(id, userId);
 
-    const { editors, genericTags, specificTags, ...bookData } = data;
+    const { editors, ...bookData } = data;
 
     return await this.prisma.$transaction(async (tx) => {
-      // Update book
-      const book = await tx.bookMaster.update({
+      await tx.bookMaster.update({
         where: { id },
-        data: {
-          ...bookData,
-          updatedAt: new Date()
-        }
+        data: { ...bookData, updatedAt: new Date() },
       });
 
-      const promises = [];
-
-      // Update editors if provided
+      // replace editors if provided
       if (editors !== undefined) {
-        promises.push(
-          tx.bookEditor.deleteMany({ where: { bookId: id } }),
-          editors.length > 0 
-            ? tx.bookEditor.createMany({
-                data: editors.map(e => ({
-                  bookId: id,
-                  name: e.name,
-                  role: e.role || 'Editor'
-                }))
-              })
-            : Promise.resolve()
-        );
+        await tx.bookEditor.deleteMany({ where: { bookId: id } });
+        if (editors.length) {
+          await tx.bookEditor.createMany({
+            data: editors.map((e) => ({
+              bookId: id,
+              name: e.name,
+              role: e.role || "Editor",
+            })),
+          });
+        }
       }
 
-      // Update generic tags if provided
-      if (genericTags !== undefined) {
-        promises.push(
-          tx.bookGenericTag.deleteMany({ where: { bookId: id } }),
-          genericTags.length > 0
-            ? tx.bookGenericTag.createMany({
-                data: genericTags.map(tagId => ({
-                  bookId: id,
-                  genericSubjectId: tagId
-                })),
-              })
-            : Promise.resolve()
-        );
-      }
-
-      // Update specific tags if provided
-      if (specificTags !== undefined) {
-        promises.push(
-          tx.bookSpecificTag.deleteMany({ where: { bookId: id } }),
-          specificTags.length > 0
-            ? tx.bookSpecificTag.createMany({
-                data: specificTags.map(tagId => ({
-                  bookId: id,
-                  tagId
-                })),
-              })
-            : Promise.resolve()
-        );
-      }
-
-      await Promise.all(promises);
-
-      // Return updated book
       return await tx.bookMaster.findUnique({
         where: { id },
-        include: this.detailIncludes
+        include: this.detailIncludes,
       });
     });
   }
 
+  /* ============================ DELETE ============================ */
   async delete(id: string, userId: string) {
-    // Verify ownership
     await this.findById(id, userId);
 
-    return await this.prisma.$transaction(async (tx) => {
-      // Delete all related entities
+    await this.prisma.$transaction(async (tx) => {
       await Promise.all([
         tx.bookEditor.deleteMany({ where: { bookId: id } }),
-        tx.bookGenericTag.deleteMany({ where: { bookId: id } }),
-        tx.bookSpecificTag.deleteMany({ where: { bookId: id } }),
-        tx.summaryTransaction.deleteMany({ where: { bookId: id } })
+        tx.summaryTransaction.deleteMany({ where: { bookId: id } }),
       ]);
 
-      // Delete the book
       await tx.bookMaster.delete({ where: { id } });
     });
   }
 
+  /* ============================ WHERE BUILDER ============================ */
   private buildWhereClause(filters: BookFilters): Prisma.BookMasterWhereInput {
     const where: Prisma.BookMasterWhereInput = {};
 
@@ -287,10 +195,10 @@ export class BookRepository extends BaseRepository {
 
     if (filters.search) {
       where.OR = [
-        { bookName: { contains: filters.search, mode: 'insensitive' } },
-        { libraryNumber: { contains: filters.search, mode: 'insensitive' } },
-        { bookSummary: { contains: filters.search, mode: 'insensitive' } },
-        { publisherName: { contains: filters.search, mode: 'insensitive' } }
+        { bookName: { contains: filters.search, mode: "insensitive" } },
+        { libraryNumber: { contains: filters.search, mode: "insensitive" } },
+        { bookSummary: { contains: filters.search, mode: "insensitive" } },
+        { publisherName: { contains: filters.search, mode: "insensitive" } },
       ];
     }
 
@@ -299,29 +207,34 @@ export class BookRepository extends BaseRepository {
     }
 
     if (filters.publisherName) {
-      where.publisherName = { contains: filters.publisherName, mode: 'insensitive' };
+      where.publisherName = { contains: filters.publisherName, mode: "insensitive" };
     }
 
     if (filters.grade) {
       where.grade = filters.grade;
     }
 
-    if (filters.genericTagIds?.length) {
-      where.genericTags = {
-        some: {
-          genericSubjectId: { in: filters.genericTagIds }
-        }
+    // New schema: tags exist as IDs on SummaryTransaction
+    if (filters.genericSubjectIds?.length) {
+      where.transactions = {
+        some: { genericSubjectId: { in: filters.genericSubjectIds } },
       };
     }
 
-    if (filters.specificTagIds?.length) {
-      where.specificTags = {
+    if (filters.specificSubjectIds?.length) {
+      where.transactions = {
+        ...(where.transactions ?? {}),
         some: {
-          tagId: { in: filters.specificTagIds }
-        }
+          AND: [
+            ...(filters.genericSubjectIds?.length
+              ? [{ genericSubjectId: { in: filters.genericSubjectIds } }]
+              : []),
+            { specificSubjectId: { in: filters.specificSubjectIds } },
+          ],
+        },
       };
     }
 
     return where;
-  }
+    }
 }

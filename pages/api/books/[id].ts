@@ -17,28 +17,42 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     try {
       const includeTransactions = toStr(req.query.includeTransactions) === "true";
 
+      const include: any = { editor: true };
+      if (includeTransactions) {
+        include.transactions = {
+          orderBy: [{ srNo: "asc" }],
+          include: {
+            genericSubject: true,
+            specificSubject: true,
+            user: { select: { id: true, name: true, email: true } },
+            book: {
+              select: {
+                id: true,
+                bookName: true,
+                libraryNumber: true,
+                bookSummary: true,
+                pageNumbers: true,
+              },
+            },
+          },
+        };
+      }
+
       const book = await prisma.bookMaster.findFirst({
         where: { id, userId },
-        include: includeTransactions
-          ? {
-              transactions: {
-                orderBy: [{ srNo: "asc" }],
-                select: {
-                  id: true,
-                  srNo: true,
-                  title: true,
-                  pageNo: true,
-                  keywords: true,
-                  remark: true,
-                  createdAt: true,
-                },
-              },
-            }
-          : undefined,
+        include,
       });
 
       if (!book) return res.status(404).json({ error: "Book not found" });
-      return res.status(200).json(book);
+      const { editor, transactions, ...rest } = book as any;
+      const payload: any = {
+        ...rest,
+        editors: editor ?? [],
+      };
+      if (includeTransactions) {
+        payload.summaryTransactions = transactions ?? [];
+      }
+      return res.status(200).json(payload);
     } catch (e) {
       console.error("GET /books/[id] error", e);
       return res.status(500).json({ error: "Failed to fetch book" });
