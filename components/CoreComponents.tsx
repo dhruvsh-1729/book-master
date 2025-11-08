@@ -21,11 +21,14 @@ export const DataTable = <T extends { id: string }>({
   onEdit,
   onDelete,
   onView,
+  onRowClick,
+  rowClickable = false,
   searchable = false,
   onSearch,
   searchPlaceholder = 'Search...',
 }: DataTableProps<T>) => {
   const [searchTerm, setSearchTerm] = useState<string>('');
+  const hasActions = Boolean(onView || onEdit || onDelete);
 
   const handleSearch = (value: string) => {
     setSearchTerm(value);
@@ -68,14 +71,20 @@ export const DataTable = <T extends { id: string }>({
                     {column.label}
                   </th>
                 ))}
-                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Actions
-                </th>
+                {hasActions && (
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Actions
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {data?.map((row) => (
-                <tr key={row.id} className="hover:bg-gray-50">
+                <tr
+                  key={row.id}
+                  className={`hover:bg-gray-50 ${onRowClick || rowClickable ? 'cursor-pointer hover:bg-blue-50/50' : ''}`}
+                  onClick={() => onRowClick?.(row)}
+                >
                   {columns.map((column) => (
                     <td key={String(column.key)} className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                       {column.render
@@ -83,23 +92,46 @@ export const DataTable = <T extends { id: string }>({
                         : String((row as any)[column.key] ?? '')}
                     </td>
                   ))}
-                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
-                    {onView && (
-                      <button onClick={() => onView(row)} className="text-blue-600 hover:text-blue-900" title="View">
-                        <Eye className="h-4 w-4" />
-                      </button>
-                    )}
-                    {onEdit && (
-                      <button onClick={() => onEdit(row)} className="text-indigo-600 hover:text-indigo-900" title="Edit">
-                        <Edit className="h-4 w-4" />
-                      </button>
-                    )}
-                    {onDelete && (
-                      <button onClick={() => onDelete(row)} className="text-red-600 hover:text-red-900" title="Delete">
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    )}
-                  </td>
+                  {hasActions && (
+                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
+                      {onView && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onView(row);
+                          }}
+                          className="text-blue-600 hover:text-blue-900"
+                          title="View"
+                        >
+                          <Eye className="h-4 w-4" />
+                        </button>
+                      )}
+                      {onEdit && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onEdit(row);
+                          }}
+                          className="text-indigo-600 hover:text-indigo-900"
+                          title="Edit"
+                        >
+                          <Edit className="h-4 w-4" />
+                        </button>
+                      )}
+                      {onDelete && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDelete(row);
+                          }}
+                          className="text-red-600 hover:text-red-900"
+                          title="Delete"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      )}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -222,9 +254,11 @@ export const FormInput: React.FC<FormInputProps> = ({
   placeholder,
   rows,
   options,
+  disabled = false,
 }) => {
   const base = 'w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent';
   const err = error ? 'border-red-500' : '';
+  const disabledClasses = disabled ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : '';
 
   return (
     <div className="space-y-1">
@@ -236,9 +270,23 @@ export const FormInput: React.FC<FormInputProps> = ({
       )}
 
       {type === 'textarea' ? (
-        <textarea name={name} value={value || ''} onChange={onChange} rows={rows || 3} placeholder={placeholder} className={`${base} ${err}`} />
+        <textarea
+          name={name}
+          value={value || ''}
+          onChange={onChange}
+          rows={rows || 3}
+          placeholder={placeholder}
+          className={`${base} ${err} ${disabledClasses}`}
+          disabled={disabled}
+        />
       ) : type === 'select' ? (
-        <select name={name} value={value ?? ''} onChange={onChange} className={`${base} ${err}`}>
+        <select
+          name={name}
+          value={value ?? ''}
+          onChange={onChange}
+          className={`${base} ${err} ${disabledClasses}`}
+          disabled={disabled}
+        >
           <option value="">{placeholder || 'Select an option'}</option>
           {options?.map((o) => (
             <option key={o.value} value={o.value}>
@@ -247,7 +295,15 @@ export const FormInput: React.FC<FormInputProps> = ({
           ))}
         </select>
       ) : (
-        <input type={type} name={name} value={value ?? ''} onChange={onChange} placeholder={placeholder} className={`${base} ${err}`} />
+        <input
+          type={type}
+          name={name}
+          value={value ?? ''}
+          onChange={onChange}
+          placeholder={placeholder}
+          className={`${base} ${err} ${disabledClasses}`}
+          disabled={disabled}
+        />
       )}
 
       {error && <p className="text-sm text-red-600">{error}</p>}

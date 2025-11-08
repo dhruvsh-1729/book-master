@@ -155,6 +155,8 @@ export interface TransactionFormData {
   pageNo?: string;
   informationRating?: string;
   remark?: string;
+  summary?: string;
+  conclusion?: string;
   bookId: string;
 }
 
@@ -194,6 +196,8 @@ export interface DataTableProps<T = any> {
   onEdit?: (row: T) => void;
   onDelete?: (row: T) => void;
   onView?: (row: T) => void;
+  onRowClick?: (row: T) => void;
+  rowClickable?: boolean;
   searchable?: boolean;
   onSearch?: (search: string) => void;
   searchPlaceholder?: string;
@@ -216,6 +220,7 @@ export interface FormInputProps {
   placeholder?: string;
   rows?: number;
   options?: Array<{ value: string | number; label: string }>;
+  disabled?: boolean;
 }
 export interface AlertProps {
   type?: 'success' | 'error' | 'warning' | 'info';
