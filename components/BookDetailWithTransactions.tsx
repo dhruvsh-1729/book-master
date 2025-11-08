@@ -207,21 +207,35 @@ const BookDetailWithTransactions: React.FC<BookDetailWithTransactionsProps> = ({
       render: (value: number) => <span className="font-mono text-sm bg-gray-100 px-2 py-1 rounded">{value}</span>,
     },
     {
-      key: 'genericSubject',
-      label: 'Generic Subject',
-      render: (value: GenericSubjectMaster | null) =>
-        value ? (
-          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">{value.name}</span>
+      key: 'genericSubjects',
+      label: 'Generic Subjects',
+      render: (value: GenericSubjectMaster[] | undefined) =>
+        value && value.length ? (
+          <div className="flex flex-wrap gap-1">
+            {value.slice(0, 3).map((subject) => (
+              <span key={subject.id} className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                {subject.name}
+              </span>
+            ))}
+            {value.length > 3 && <span className="text-[11px] text-blue-600">+{value.length - 3} more</span>}
+          </div>
         ) : (
           <span className="text-gray-400 text-xs">Not set</span>
         ),
     },
     {
-      key: 'specificSubject',
-      label: 'Specific Subject',
-      render: (value: TagMaster | null) =>
-        value ? (
-          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">{value.name}</span>
+      key: 'specificSubjects',
+      label: 'Specific Tags',
+      render: (value: TagMaster[] | undefined) =>
+        value && value.length ? (
+          <div className="flex flex-wrap gap-1">
+            {value.slice(0, 3).map((tag) => (
+              <span key={tag.id} className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                {tag.name}
+              </span>
+            ))}
+            {value.length > 3 && <span className="text-[11px] text-green-600">+{value.length - 3} more</span>}
+          </div>
         ) : (
           <span className="text-gray-400 text-xs">Not set</span>
         ),

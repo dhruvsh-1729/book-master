@@ -104,6 +104,17 @@ const escapeCsv = (value: unknown) => {
 
 const toStr = (v: unknown) => (typeof v === "string" ? v : Array.isArray(v) ? v[0] ?? "" : "");
 
+const splitMultiValues = (raw?: string) => {
+  if (!truthy(raw)) return [];
+  return String(raw)
+    .split(/[,;|]/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+};
+
+const joinMultiValues = (values: (string | null | undefined)[]) =>
+  values.filter(Boolean).map((v) => String(v)).join("; ");
+
 export const config = {
   api: {
     bodyParser: {
@@ -182,8 +193,8 @@ async function handleImport(req: NextApiRequest, res: NextApiResponse, userId: s
   let created = 0;
   let skipped = 0;
   let lastTitle = "";
-  let lastGeneric = "";
-  let lastSpecific = "";
+  let lastGeneric: string[] = [];
+  let lastSpecific: string[] = [];
 
   for (let i = 1; i < records.length; i++) {
     const row = records[i];
@@ -193,13 +204,13 @@ async function handleImport(req: NextApiRequest, res: NextApiResponse, userId: s
     if (truthy(title)) lastTitle = title as string;
     else if (lastTitle) title = lastTitle;
 
-    let genericName = pickCol(row, COLS.genericSubjectName);
-    if (truthy(genericName)) lastGeneric = genericName as string;
-    else if (lastGeneric) genericName = lastGeneric;
+    let genericNames = splitMultiValues(pickCol(row, COLS.genericSubjectName));
+    if (genericNames.length) lastGeneric = genericNames;
+    else if (lastGeneric.length) genericNames = [...lastGeneric];
 
-    let specificName = pickCol(row, COLS.specificTagName);
-    if (truthy(specificName)) lastSpecific = specificName as string;
-    else if (lastSpecific) specificName = lastSpecific;
+    let specificNames = splitMultiValues(pickCol(row, COLS.specificTagName));
+    if (specificNames.length) lastSpecific = specificNames;
+    else if (lastSpecific.length) specificNames = [...lastSpecific];
 
     const tagCategory = pickCol(row, COLS.tagCategory) ?? null;
     const keywords = pickCol(row, COLS.keywords) ?? null;
@@ -212,21 +223,29 @@ async function handleImport(req: NextApiRequest, res: NextApiResponse, userId: s
     const conclusion = pickCol(row, COLS.conclusion) ?? null;
 
     try {
-      const generic = truthy(genericName)
-        ? await prisma.genericSubjectMaster.upsert({
-            where: { name: genericName as string },
-            update: {},
-            create: { name: genericName as string },
-          })
-        : null;
+      const genericRecords = genericNames.length
+        ? await Promise.all(
+            genericNames.map((name) =>
+              prisma.genericSubjectMaster.upsert({
+                where: { name },
+                update: {},
+                create: { name },
+              })
+            )
+          )
+        : [];
 
-      const specific = truthy(specificName)
-        ? await prisma.tagMaster.upsert({
-            where: { name: specificName as string },
-            update: tagCategory ? { category: tagCategory } : {},
-            create: { name: specificName as string, category: tagCategory },
-          })
-        : null;
+      const specificRecords = specificNames.length
+        ? await Promise.all(
+            specificNames.map((name) =>
+              prisma.tagMaster.upsert({
+                where: { name },
+                update: tagCategory ? { category: tagCategory } : {},
+                create: { name, category: tagCategory },
+              })
+            )
+          )
+        : [];
 
       await prisma.summaryTransaction.create({
         data: {
@@ -242,8 +261,20 @@ async function handleImport(req: NextApiRequest, res: NextApiResponse, userId: s
           conclusion,
           bookId: book.id,
           userId,
-          genericSubjectId: generic?.id ?? null,
-          specificSubjectId: specific?.id ?? null,
+          genericSubjects: genericRecords.length
+            ? {
+                create: genericRecords.map((record) => ({
+                  genericSubject: { connect: { id: record.id } },
+                })),
+              }
+            : undefined,
+          specificSubjects: specificRecords.length
+            ? {
+                create: specificRecords.map((record) => ({
+                  tag: { connect: { id: record.id } },
+                })),
+              }
+            : undefined,
         },
       });
       created++;
@@ -271,8 +302,8 @@ async function handleExport(req: NextApiRequest, res: NextApiResponse, userId: s
   if (!book) return res.status(404).json({ error: "Book not found" });
 
   const where: any = { bookId, userId };
-  if (genericSubjectId) where.genericSubjectId = genericSubjectId;
-  if (specificSubjectId) where.specificSubjectId = specificSubjectId;
+  if (genericSubjectId) where.genericSubjects = { some: { genericSubjectId } };
+  if (specificSubjectId) where.specificSubjects = { some: { tagId: specificSubjectId } };
   if (search) {
     where.OR = [
       { title: { contains: search, mode: "insensitive" } },
@@ -284,8 +315,8 @@ async function handleExport(req: NextApiRequest, res: NextApiResponse, userId: s
   const transactions = await prisma.summaryTransaction.findMany({
     where,
     include: {
-      genericSubject: true,
-      specificSubject: true,
+      genericSubjects: { include: { genericSubject: true } },
+      specificSubjects: { include: { tag: true } },
     },
     orderBy: [{ srNo: "asc" }, { createdAt: "asc" }],
   });
@@ -303,11 +334,21 @@ async function handleExport(req: NextApiRequest, res: NextApiResponse, userId: s
 
   if (transactions.length) {
     transactions.forEach((tx) => {
+      const genericNames = (tx.genericSubjects || [])
+        .map((link: any) => link.genericSubject?.name ?? null)
+        .filter(Boolean);
+      const specificNames = (tx.specificSubjects || [])
+        .map((link: any) => link.tag?.name ?? null)
+        .filter(Boolean);
+      const specificCategories = (tx.specificSubjects || [])
+        .map((link: any) => link.tag?.category ?? null)
+        .filter(Boolean);
+
       const row = EXPORT_HEADERS.map((col) => {
         if (col.source === "book") return "";
-        if (col.key === "genericSubjectName") return escapeCsv(tx.genericSubject?.name ?? "");
-        if (col.key === "specificTagName") return escapeCsv(tx.specificSubject?.name ?? "");
-        if (col.key === "tagCategory") return escapeCsv(tx.specificSubject?.category ?? "");
+        if (col.key === "genericSubjectName") return escapeCsv(joinMultiValues(genericNames));
+        if (col.key === "specificTagName") return escapeCsv(joinMultiValues(specificNames));
+        if (col.key === "tagCategory") return escapeCsv(joinMultiValues(specificCategories));
         if (col.key === "itemRemark") return escapeCsv(tx.remark ?? "");
         if (col.key === "relevantParagraph") {
           const value = tx.relevantParagraph;

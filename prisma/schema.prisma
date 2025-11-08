@@ -32,7 +32,7 @@ model GenericSubjectMaster {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  summaryTransactions SummaryTransaction[]
+  summaryTransactions SummaryTransactionGenericSubject[]
 
   @@map("generic_subject_masters")
 }
@@ -45,7 +45,7 @@ model TagMaster {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  summaryTransactions SummaryTransaction[]
+  summaryTransactions SummaryTransactionSpecificTag[]
 
   @@index([category])
   @@map("tag_masters")
@@ -108,25 +108,48 @@ model SummaryTransaction {
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
-  bookId            String  @db.ObjectId
-  userId            String  @db.ObjectId
-  genericSubjectId  String? @db.ObjectId
-  specificSubjectId String? @db.ObjectId
+  bookId String @db.ObjectId
+  userId String @db.ObjectId
 
   // Relations
-  // (1) Many transactions belong to one book
   book BookMaster @relation("BookToTransactions", fields: [bookId], references: [id])
 
-  user            User                  @relation(fields: [userId], references: [id])
-  genericSubject  GenericSubjectMaster? @relation(fields: [genericSubjectId], references: [id])
-  specificSubject TagMaster?            @relation(fields: [specificSubjectId], references: [id])
-  bookMasterId    String?               @db.ObjectId
+  user             User                                 @relation(fields: [userId], references: [id])
+  genericSubjects  SummaryTransactionGenericSubject[]
+  specificSubjects SummaryTransactionSpecificTag[]
+  bookMasterId     String?                              @db.ObjectId
 
   @@index([bookId])
   @@index([userId])
-  @@index([genericSubjectId])
-  @@index([specificSubjectId])
   @@index([srNo])
   @@index([title])
   @@map("summary_transactions")
+}
+
+model SummaryTransactionGenericSubject {
+  id                    String             @id @default(auto()) @map("_id") @db.ObjectId
+  summaryTransactionId  String             @db.ObjectId
+  genericSubjectId      String             @db.ObjectId
+  createdAt             DateTime           @default(now())
+
+  summaryTransaction SummaryTransaction @relation(fields: [summaryTransactionId], references: [id])
+  genericSubject     GenericSubjectMaster @relation(fields: [genericSubjectId], references: [id])
+
+  @@unique([summaryTransactionId, genericSubjectId])
+  @@index([genericSubjectId])
+  @@map("summary_transaction_generic_subjects")
+}
+
+model SummaryTransactionSpecificTag {
+  id                   String   @id @default(auto()) @map("_id") @db.ObjectId
+  summaryTransactionId String   @db.ObjectId
+  tagId                String   @db.ObjectId
+  createdAt            DateTime @default(now())
+
+  summaryTransaction SummaryTransaction @relation(fields: [summaryTransactionId], references: [id])
+  tag               TagMaster           @relation(fields: [tagId], references: [id])
+
+  @@unique([summaryTransactionId, tagId])
+  @@index([tagId])
+  @@map("summary_transaction_specific_tags")
 }

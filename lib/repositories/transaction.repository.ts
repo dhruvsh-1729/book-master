@@ -5,8 +5,8 @@ import { ApiError } from '../utils/api-helpers';
 export interface TransactionFilters {
   userId?: string;
   bookId?: string;
-  genericSubjectId?: string;
-  specificSubjectId?: string;
+  genericSubjectIds?: string[];
+  specificSubjectIds?: string[];
   search?: string;
   informationRating?: string;
 }
@@ -15,8 +15,8 @@ export interface TransactionCreateData {
   bookId: string;
   userId: string;
   srNo: number;
-  genericSubjectId?: string;
-  specificSubjectId?: string;
+  genericSubjectIds?: string[];
+  specificSubjectIds?: string[];
   title?: string;
   keywords?: string;
   relevantParagraph?: any;
@@ -35,17 +35,11 @@ export class TransactionRepository extends BaseRepository {
         libraryNumber: true
       }
     },
-    genericSubject: {
-      select: {
-        id: true,
-        name: true
-      }
+    genericSubjects: {
+      include: { genericSubject: true }
     },
-    specificSubject: {
-      select: {
-        id: true,
-        name: true
-      }
+    specificSubjects: {
+      include: { tag: true }
     }
   } satisfies Prisma.SummaryTransactionInclude;
 
@@ -67,7 +61,7 @@ export class TransactionRepository extends BaseRepository {
       this.prisma.summaryTransaction.count({ where })
     ]);
 
-    return { transactions, total };
+    return { transactions: transactions.map((tx) => this.mapTransaction(tx)), total };
   }
 
   async findById(id: string, userId?: string) {
@@ -94,7 +88,7 @@ export class TransactionRepository extends BaseRepository {
       throw new ApiError(404, 'Transaction not found', 'TRANSACTION_NOT_FOUND');
     }
 
-    return transaction;
+    return this.mapTransaction(transaction);
   }
 
   async create(data: TransactionCreateData) {
@@ -122,10 +116,40 @@ export class TransactionRepository extends BaseRepository {
       throw new ApiError(400, 'Serial number already exists for this book', 'DUPLICATE_SR_NO');
     }
 
-    return await this.prisma.summaryTransaction.create({
-      data,
+    const genericIds = Array.from(new Set(data.genericSubjectIds || []));
+    const specificIds = Array.from(new Set(data.specificSubjectIds || []));
+
+    const created = await this.prisma.summaryTransaction.create({
+      data: {
+        bookId: data.bookId,
+        userId: data.userId,
+        srNo: data.srNo,
+        title: data.title ?? null,
+        keywords: data.keywords ?? null,
+        relevantParagraph: data.relevantParagraph ?? null,
+        paragraphNo: data.paragraphNo ?? null,
+        pageNo: data.pageNo ?? null,
+        informationRating: data.informationRating ?? null,
+        remark: data.remark ?? null,
+        genericSubjects: genericIds.length
+          ? {
+              create: genericIds.map((id) => ({
+                genericSubject: { connect: { id } }
+              }))
+            }
+          : undefined,
+        specificSubjects: specificIds.length
+          ? {
+              create: specificIds.map((id) => ({
+                tag: { connect: { id } }
+              }))
+            }
+          : undefined
+      },
       include: this.defaultIncludes
     });
+
+    return this.mapTransaction(created);
   }
 
   async update(id: string, userId: string, data: Partial<TransactionCreateData>) {
@@ -147,23 +171,67 @@ export class TransactionRepository extends BaseRepository {
       }
     }
 
-    return await this.prisma.summaryTransaction.update({
+    const genericIds = data.genericSubjectIds ? Array.from(new Set(data.genericSubjectIds)) : undefined;
+    const specificIds = data.specificSubjectIds ? Array.from(new Set(data.specificSubjectIds)) : undefined;
+
+    const updatePayload: Prisma.SummaryTransactionUpdateInput = {
+      updatedAt: new Date(),
+      ...(data.srNo !== undefined ? { srNo: data.srNo } : {}),
+      title: data.title ?? undefined,
+      keywords: data.keywords ?? undefined,
+      relevantParagraph: data.relevantParagraph ?? undefined,
+      paragraphNo: data.paragraphNo ?? undefined,
+      pageNo: data.pageNo ?? undefined,
+      informationRating: data.informationRating ?? undefined,
+      remark: data.remark ?? undefined,
+      ...(genericIds !== undefined
+        ? {
+            genericSubjects: {
+              deleteMany: {},
+              ...(genericIds.length
+                ? {
+                    create: genericIds.map((gid) => ({
+                      genericSubject: { connect: { id: gid } }
+                    }))
+                  }
+                : {})
+            }
+          }
+        : {}),
+      ...(specificIds !== undefined
+        ? {
+            specificSubjects: {
+              deleteMany: {},
+              ...(specificIds.length
+                ? {
+                    create: specificIds.map((sid) => ({
+                      tag: { connect: { id: sid } }
+                    }))
+                  }
+                : {})
+            }
+          }
+        : {})
+    };
+
+    const updated = await this.prisma.summaryTransaction.update({
       where: { id },
-      data: {
-        ...data,
-        updatedAt: new Date()
-      },
+      data: updatePayload,
       include: this.defaultIncludes
     });
+
+    return this.mapTransaction(updated);
   }
 
   async delete(id: string, userId: string) {
     // Verify ownership
     await this.findById(id, userId);
 
-    await this.prisma.summaryTransaction.delete({
-      where: { id }
-    });
+    await this.prisma.$transaction([
+      this.prisma.summaryTransactionGenericSubject.deleteMany({ where: { summaryTransactionId: id } }),
+      this.prisma.summaryTransactionSpecificTag.deleteMany({ where: { summaryTransactionId: id } }),
+      this.prisma.summaryTransaction.delete({ where: { id } })
+    ]);
   }
 
   async findByBookId(bookId: string, userId: string, page: number, limit: number, search?: string) {
@@ -199,8 +267,16 @@ export class TransactionRepository extends BaseRepository {
 
     if (filters.userId) where.userId = filters.userId;
     if (filters.bookId) where.bookId = filters.bookId;
-    if (filters.genericSubjectId) where.genericSubjectId = filters.genericSubjectId;
-    if (filters.specificSubjectId) where.specificSubjectId = filters.specificSubjectId;
+    if (filters.genericSubjectIds?.length) {
+      where.genericSubjects = {
+        some: { genericSubjectId: { in: filters.genericSubjectIds } }
+      };
+    }
+    if (filters.specificSubjectIds?.length) {
+      where.specificSubjects = {
+        some: { tagId: { in: filters.specificSubjectIds } }
+      };
+    }
     if (filters.informationRating) where.informationRating = filters.informationRating;
 
     if (filters.search) {
@@ -212,5 +288,17 @@ export class TransactionRepository extends BaseRepository {
     }
 
     return where;
+  }
+
+  private mapTransaction(transaction: any) {
+    return {
+      ...transaction,
+      genericSubjects: (transaction.genericSubjects || [])
+        .map((link: any) => link.genericSubject)
+        .filter(Boolean),
+      specificSubjects: (transaction.specificSubjects || [])
+        .map((link: any) => link.tag)
+        .filter(Boolean)
+    };
   }
 }

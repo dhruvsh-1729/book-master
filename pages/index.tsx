@@ -132,16 +132,19 @@ const Dashboard: React.FC = () => {
                         <span className="text-sm font-medium text-gray-900 truncate">{t.title || 'Untitled'}</span>
                       </div>
                       <p className="text-sm text-gray-600 mt-1">Book: {t.book?.bookName}</p>
-                      <div className="flex items-center space-x-2 mt-2">
-                        {t.genericSubject && (
-                          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                            {t.genericSubject.name}
+                      <div className="flex flex-wrap gap-2 mt-2">
+                        {(t.genericSubjects || []).slice(0, 2).map((subject) => (
+                          <span key={subject.id} className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                            {subject.name}
                           </span>
-                        )}
-                        {t.specificSubject && (
-                          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                            {t.specificSubject.name}
+                        ))}
+                        {(t.specificSubjects || []).slice(0, 2).map((tag) => (
+                          <span key={tag.id} className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                            {tag.name}
                           </span>
+                        ))}
+                        {((t.genericSubjects?.length || 0) + (t.specificSubjects?.length || 0)) > 4 && (
+                          <span className="text-[11px] text-gray-500">+more</span>
                         )}
                       </div>
                     </div>

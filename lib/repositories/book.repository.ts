@@ -49,8 +49,8 @@ export class BookRepository extends BaseRepository {
     transactions: {
       include: {
         /** relation names inside SummaryTransaction */
-        genericSubject: true,   // GenericSubjectMaster?
-        specificSubject: true,  // TagMaster?
+        genericSubjects: { include: { genericSubject: true } },
+        specificSubjects: { include: { tag: true } },
         user: { select: { id: true, name: true, email: true } },
       },
       orderBy: { srNo: "asc" },
@@ -214,27 +214,21 @@ export class BookRepository extends BaseRepository {
       where.grade = filters.grade;
     }
 
-    // New schema: tags exist as IDs on SummaryTransaction
+    const transactionFilters: Prisma.SummaryTransactionWhereInput = {};
     if (filters.genericSubjectIds?.length) {
-      where.transactions = {
+      transactionFilters.genericSubjects = {
         some: { genericSubjectId: { in: filters.genericSubjectIds } },
       };
     }
-
     if (filters.specificSubjectIds?.length) {
-      where.transactions = {
-        ...(where.transactions ?? {}),
-        some: {
-          AND: [
-            ...(filters.genericSubjectIds?.length
-              ? [{ genericSubjectId: { in: filters.genericSubjectIds } }]
-              : []),
-            { specificSubjectId: { in: filters.specificSubjectIds } },
-          ],
-        },
+      transactionFilters.specificSubjects = {
+        some: { tagId: { in: filters.specificSubjectIds } },
       };
+    }
+    if (Object.keys(transactionFilters).length) {
+      where.transactions = { some: transactionFilters };
     }
 
     return where;
-    }
+  }
 }
