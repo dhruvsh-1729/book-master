@@ -1,185 +1,119 @@
-// pages/api/books/index.ts - Updated with Authentication
-import { NextApiRequest, NextApiResponse } from 'next';
-import { getUserIdFromRequest } from '../../../lib/auth';
-import prisma from '@/lib/prisma'; 
+// pages/api/books/index.ts
+import type { NextApiRequest, NextApiResponse } from "next";
+import prisma from "@/lib/prisma";
+import { getUserIdFromRequest } from "@/lib/auth";
+
+const toStr = (v: unknown, fallback = ""): string =>
+  typeof v === "string" ? v : Array.isArray(v) ? (v[0] ?? fallback) : fallback;
+
+const toInt = (v: unknown, def = 1, min = 1, max?: number): number => {
+  const n = Number(toStr(v, String(def)));
+  const clamped = Number.isFinite(n) ? Math.max(min, n) : def;
+  return max ? Math.min(clamped, max) : clamped;
+};
+
+const paginate = (page: number, limit: number) => ({
+  skip: (page - 1) * limit,
+  take: limit,
+});
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  // Get user ID from token
   const userId = getUserIdFromRequest(req);
-  
-  if (!userId) {
-    return res.status(401).json({ error: 'Authentication required' });
+  if (!userId) return res.status(401).json({ error: "Authentication required" });
+
+  if (req.method === "GET") {
+    try {
+      const page = toInt(req.query.page, 1, 1);
+      const limit = toInt(req.query.limit, 10, 1, 100);
+      const search = toStr(req.query.search).trim();
+
+      const where = {
+        userId,
+        ...(search
+          ? {
+              OR: [
+                { bookName: { contains: search, mode: "insensitive" as const } },
+                { publisherName: { contains: search, mode: "insensitive" as const } },
+                { grade: { contains: search, mode: "insensitive" as const } },
+                { remark: { contains: search, mode: "insensitive" as const } },
+                { libraryNumber: { contains: search, mode: "insensitive" as const } },
+              ],
+            }
+          : {}),
+      };
+
+      const [{ skip, take }] = [paginate(page, limit)];
+      const [books, total] = await Promise.all([
+        prisma.bookMaster.findMany({
+          where,
+          skip,
+          take,
+          orderBy: [{ createdAt: "desc" }],
+          select: {
+            id: true,
+            libraryNumber: true,
+            bookName: true,
+            bookSummary: true,
+            publisherName: true,
+            grade: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+        }),
+        prisma.bookMaster.count({ where }),
+      ]);
+
+      return res.status(200).json({
+        books,
+        pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+      });
+    } catch (e) {
+      console.error("GET /books error", e);
+      return res.status(500).json({ error: "Failed to fetch books" });
+    }
+  } else if (req.method === "POST") {
+    try {
+      const {
+        libraryNumber,
+        bookName,
+        bookSummary,
+        pageNumbers,
+        grade,
+        remark,
+        edition,
+        publisherName,
+      } = req.body ?? {};
+
+      if (!libraryNumber || !bookName) {
+        return res
+          .status(400)
+          .json({ error: "Library number and book name are required" });
+      }
+
+      const created = await prisma.bookMaster.create({
+        data: {
+          libraryNumber: String(libraryNumber),
+          bookName: String(bookName),
+          bookSummary: bookSummary ?? null,
+          pageNumbers: pageNumbers ?? null,
+          grade: grade ?? null,
+          remark: remark ?? null,
+          edition: edition ?? null,
+          publisherName: publisherName ?? null,
+          userId,
+        },
+      });
+
+      return res.status(201).json(created);
+    } catch (e: any) {
+      if (e?.code === "P2002") {
+        return res.status(400).json({ error: "Library number already exists" });
+      }
+      console.error("POST /books error", e);
+      return res.status(500).json({ error: "Failed to create book" });
+    }
   }
 
-  const { method } = req;
-
-  switch (method) {
-    case 'GET':
-      try {
-        const { page = 1, limit = 10, search = '' } = req.query;
-        const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
-
-        const where = {
-          // userId, // Only show books for authenticated user
-          ...(search ? {
-            OR: [
-              { bookName: { contains: search as string } },
-              { libraryNumber: { contains: search as string } },
-              { bookSummary: { contains: search as string } }
-            ]
-          } : {})
-        };
-
-        const [books, total] = await Promise.all([
-          prisma.bookMaster.findMany({
-            where,
-            include: {
-              user: { select: { id: true, name: true, email: true } },
-              editors: true,
-              genericTags: {
-                include: { genericSubject: true }
-              },
-              specificTags: {
-                include: { tag: true }
-              },
-              _count: {
-                select: { summaryTransactions: true }
-              }
-            },
-            skip,
-            take: parseInt(limit as string),
-            orderBy: { createdAt: 'desc' }
-          }),
-          prisma.bookMaster.count({ where })
-        ]);
-
-        res.status(200).json({
-          books,
-          pagination: {
-            page: parseInt(page as string),
-            limit: parseInt(limit as string),
-            total,
-            pages: Math.ceil(total / parseInt(limit as string))
-          }
-        });
-      } catch (error: any) {
-        console.error('Error fetching books:', error);
-        res.status(500).json({ error: 'Failed to fetch books' });
-      }
-      break;
-
-    case 'POST':
-      try {
-        const {
-          libraryNumber,
-          bookName,
-          bookSummary,
-          pageNumbers,
-          grade,
-          remark,
-          edition,
-          publisherName,
-          editors = [],
-          genericTags = [],
-          specificTags = []
-        } = req.body;
-
-        // Validate required fields
-        if (!libraryNumber || !bookName) {
-          return res.status(400).json({ 
-            error: 'Library number and book name are required' 
-          });
-        }
-
-        // Check if library number already exists for this user
-        const existingBook = await prisma.bookMaster.findFirst({
-          where: { 
-            libraryNumber,
-            userId 
-          }
-        });
-
-        if (existingBook) {
-          return res.status(400).json({ 
-            error: 'Library number already exists in your collection' 
-          });
-        }
-
-        // Create book with transaction for data consistency
-        const book = await prisma.$transaction(async (tx:any) => {
-          // Create the book with authenticated user's ID
-          const newBook = await tx.bookMaster.create({
-            data: {
-              libraryNumber,
-              bookName,
-              bookSummary,
-              pageNumbers,
-              grade,
-              remark,
-              edition,
-              publisherName,
-              userId // Automatically use authenticated user's ID
-            }
-          });
-
-          // Create editors
-          if (editors.length > 0) {
-            await tx.bookEditor.createMany({
-              data: editors.map((editor: any) => ({
-                bookId: newBook.id,
-                name: editor.name,
-                role: editor.role || 'Editor'
-              }))
-            });
-          }
-
-          // Create generic tag relationships
-          if (genericTags.length > 0) {
-            await tx.bookGenericTag.createMany({
-              data: genericTags.map((tagId: string) => ({
-                bookId: newBook.id,
-                genericSubjectId: tagId
-              }))
-            });
-          }
-
-          // Create specific tag relationships
-          if (specificTags.length > 0) {
-            await tx.bookSpecificTag.createMany({
-              data: specificTags.map((tagId: string) => ({
-                bookId: newBook.id,
-                tagId: tagId
-              }))
-            });
-          }
-
-          return newBook;
-        });
-
-        // Fetch the complete book with all relationships
-        const completeBook = await prisma.bookMaster.findUnique({
-          where: { id: book.id },
-          include: {
-            user: { select: { id: true, name: true, email: true } },
-            editors: true,
-            genericTags: {
-              include: { genericSubject: true }
-            },
-            specificTags: {
-              include: { tag: true }
-            }
-          }
-        });
-
-        res.status(201).json(completeBook);
-      } catch (error: any) {
-        console.error('Error creating book:', error);
-        res.status(500).json({ error: 'Failed to create book' });
-      }
-      break;
-
-    default:
-      res.setHeader('Allow', ['GET', 'POST']);
-      res.status(405).end(`Method ${method} Not Allowed`);
-  }
+  res.setHeader("Allow", ["GET", "POST"]);
+  return res.status(405).end(`Method ${req.method} Not Allowed`);
 }

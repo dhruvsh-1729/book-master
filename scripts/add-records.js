@@ -1,0 +1,267 @@
+#!/usr/bin/env node
+ 
+
+const fs = require('fs');
+const path = require('path');
+const { parse } = require('csv-parse/sync');
+const { PrismaClient } = require('@prisma/client');
+
+const prisma = new PrismaClient();
+
+/**
+ * Column aliases — tweak to your headers if needed.
+ */
+const COLS = {
+  // BookMaster fields (from FIRST data row ONLY)
+  libraryNumber: ['Sr No.'],
+  bookName: ['bookName', 'Book Name', 'Title', 'Book', 'Generic Subject'],
+  bookSummary: ['bookSummary', 'Book Summary', 'Summary (Book)', 'Book_Summary'],
+  pageNumbers: ['pageNumbers', 'Pages', 'Page Numbers', 'Total Pages'],
+  grade: ['grade', 'Grade', 'Class'],
+  remark: ['remark', 'Remarks', 'Book Remark'],
+  edition: ['edition', 'Edition'],
+  publisherName: ['publisherName', 'Publisher', 'Publisher Name'],
+
+  // SummaryTransaction fields (per-row)
+  srNo: ['srNo', 'Sr No', 'SR No', 'S.No', 'Sr', 'Index', 'Sr No.'],
+  title: ['title', 'Title', 'Topic'],
+  keywords: ['keywords', 'Keywords', 'Keyword'],
+  relevantParagraph: ['relevantParagraph', 'Relevant Paragraph', 'Paragraph (JSON/Text)', 'Relevant Para', 'Excerpts'],
+  paragraphNo: ['paragraphNo', 'Paragraph No', 'Para No'],
+  pageNo: ['pageNo', 'Page No', 'Page'],
+  informationRating: ['informationRating', 'Information Rating', 'Rating'],
+  itemRemark: ['remark', 'Remarks', 'Item Remark', 'Txn Remark', 'Remark'], // separate from book-level remark usage
+  summary: ['summary', 'Summary'],
+  conclusion: ['conclusion', 'Conclusion'],
+
+  // Subjects
+  genericSubjectName: ['genericSubject', 'Generic Subject', 'Subject (Generic)'],
+  specificTagName: ['specificSubject', 'Specific Subject', 'Tag', 'Specific Tag', 'Specific'],
+  tagCategory: ['category', 'Tag Category', 'Specific Category'], // optional
+};
+
+/** ENV */
+const DATABASE_URL = process.env.DATABASE_URL;
+if (!DATABASE_URL) {
+  console.error('❌ DATABASE_URL is required.');
+  process.exit(1);
+}
+
+/** Helpers */
+const truthy = (v) => v !== undefined && v !== null && String(v).trim() !== '';
+
+const normalizeHeaderKey = (k) =>
+  String(k || '')
+    .replace(/^\uFEFF/, '') // strip BOM
+    .replace(/\s+/g, ' ')   // collapse spaces
+    .trim();
+
+function normalizeRowKeys(row) {
+  const out = {};
+  for (const key of Object.keys(row)) {
+    const nk = normalizeHeaderKey(key);
+    out[nk] = row[key];
+  }
+  return out;
+}
+
+function asAliasList(aliases) {
+  if (!aliases) return [];              // tolerate undefined/null
+  if (Array.isArray(aliases)) return aliases;
+  return [aliases];
+}
+
+function pickCol(row, aliases) {
+  const list = asAliasList(aliases);
+  for (const key of list) {
+    if (key in row && truthy(row[key])) return String(row[key]).trim();
+  }
+  return undefined;
+}
+
+function pickInt(row, aliases) {
+  const v = pickCol(row, aliases);
+  if (!truthy(v)) return undefined;
+  const n = parseInt(String(v).replace(/[^\d-]/g, ''), 10);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function maybeParseJSON(v) {
+  if (!truthy(v)) return null;
+  const s = String(v).trim();
+  if (!(s.startsWith('{') || s.startsWith('['))) return s; // keep as string
+  try {
+    return JSON.parse(s);
+  } catch {
+    return s; // keep original text if it fails to parse
+  }
+}
+
+async function main() {
+  const csvPath = path.resolve(process.cwd(), 'index.csv');
+  if (!fs.existsSync(csvPath)) {
+    console.error(`❌ Could not find ${csvPath}. Place index.csv next to this script.`);
+    process.exit(1);
+  }
+
+  const buf = fs.readFileSync(csvPath);
+  let text = buf.toString('utf8');
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1); // extra BOM guard
+
+  // Parse with header row
+  let records = parse(text, {
+    columns: true,
+    skip_empty_lines: true,
+    bom: true,
+    relax_quotes: true,
+    relax_column_count: true,
+    trim: true,
+  });
+
+  if (!records.length) {
+    console.error('❌ CSV has no data rows.');
+    process.exit(1);
+  }
+
+  // Normalize keys on every row (fixes BOM/spacing/case weirdness)
+  records = records.map(normalizeRowKeys);
+
+  // Optional debug: show available headers
+  if (process.env.DEBUG_HEADERS) {
+    console.log('🧭 Headers seen:', Object.keys(records[0]));
+  }
+
+  // Ensure user
+  const hardcodedEmail = 'dhruvshdarshansh@gmail.com';
+  let user = await prisma.user.findUnique({ where: { email: hardcodedEmail } });
+  if (!user) {
+    user = await prisma.user.create({
+      data: { email: hardcodedEmail, name: 'Dhruv' },
+    });
+    console.log(`👤 Created user: ${user.email}`);
+  } else {
+    console.log(`👤 Using user: ${user.email}`);
+  }
+
+  // STEP 1: BookMaster from FIRST data row only
+  const first = records[0];
+
+  const bookData = {
+    libraryNumber: pickCol(first, COLS.libraryNumber),
+    bookName: pickCol(first, COLS.bookName),
+    bookSummary: pickCol(first, COLS.bookSummary) || null,
+    pageNumbers: pickCol(first, COLS.pageNumbers) || null,
+    grade: pickCol(first, COLS.grade) || null,
+    remark: pickCol(first, COLS.remark) || null,
+    edition: pickCol(first, COLS.edition) || null,
+    publisherName: pickCol(first, COLS.publisherName) || null,
+  };
+
+  if (!truthy(bookData.libraryNumber) || !truthy(bookData.bookName)) {
+    console.error('❌ Missing required BookMaster fields (libraryNumber, bookName) in the first data row.');
+    console.error('🔎 First row values:', first);
+    process.exit(1);
+  }
+
+  let book = await prisma.bookMaster.findUnique({
+    where: { libraryNumber: bookData.libraryNumber },
+  });
+
+  if (book) {
+    book = await prisma.bookMaster.update({
+      where: { id: book.id },
+      data: { ...bookData, userId: user.id },
+    });
+    console.log(`📚 BookMaster exists; updated: ${book.libraryNumber} — ${book.bookName}`);
+  } else {
+    book = await prisma.bookMaster.create({
+      data: { ...bookData, userId: user.id },
+    });
+    console.log(`📚 Created BookMaster: ${book.libraryNumber} — ${book.bookName}`);
+  }
+
+  // STEP 2: From line 3 onward, only create SummaryTransaction rows pointing to the same book
+  let created = 0;
+  let skipped = 0;
+
+  for (let i = 1; i < records.length; i++) {
+    const row = records[i];
+
+    // Upsert subjects/tags
+    const genericName = pickCol(row, COLS.genericSubjectName);
+    let generic = null;
+    if (truthy(genericName)) {
+      generic = await prisma.genericSubjectMaster.upsert({
+        where: { name: genericName },
+        update: {},
+        create: { name: genericName },
+      });
+    }
+
+    const specificName = pickCol(row, COLS.specificTagName);
+    const tagCategory = pickCol(row, COLS.tagCategory) || null;
+    let tag = null;
+    if (truthy(specificName)) {
+      tag = await prisma.tagMaster.upsert({
+        where: { name: specificName },
+        update: tagCategory ? { category: tagCategory } : {},
+        create: { name: specificName, category: tagCategory },
+      });
+    }
+
+    // Transaction fields
+    const srNo = pickInt(row, COLS.srNo);
+    const title = pickCol(row, COLS.title);
+    const keywords = pickCol(row, COLS.keywords) || null;
+    const relevantParagraph = maybeParseJSON(pickCol(row, COLS.relevantParagraph));
+    const paragraphNo = pickCol(row, COLS.paragraphNo) || null;
+    const pageNo = pickCol(row, COLS.pageNo) || null;
+    const informationRating = pickCol(row, COLS.informationRating) || null;
+    const itemRemark = pickCol(row, COLS.itemRemark) || null;
+    const summary = pickCol(row, COLS.summary) || null;
+    const conclusion = pickCol(row, COLS.conclusion) || null;
+
+    // Minimal validity check
+    // if (!truthy(title) && (srNo === undefined || srNo === null)) {
+    //   skipped++;
+    //   continue;
+    // }
+
+    try {
+      await prisma.summaryTransaction.create({
+        data: {
+          srNo: Number.isFinite(srNo) ? srNo : 0,
+          title: truthy(title) ? title : null,
+          keywords,
+          relevantParagraph: relevantParagraph ?? null,
+          paragraphNo,
+          pageNo,
+          informationRating,
+          remark: itemRemark,
+          summary,
+          conclusion,
+
+          bookId: book.id,
+          userId: user.id,
+          genericSubjectId: generic ? generic.id : null,
+          specificSubjectId: tag ? tag.id : null,
+        },
+      });
+      created++;
+    } catch (err) {
+      console.error(`⚠️ Failed to create SummaryTransaction for CSV row ${i + 2}:`, err.message || err);
+      skipped++;
+    }
+  }
+
+  console.log(`\n✅ Done. SummaryTransaction created: ${created}, skipped: ${skipped}`);
+}
+
+main()
+  .catch((e) => {
+    console.error('❌ Fatal error:', e);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });

@@ -11,25 +11,23 @@ export interface User {
 export interface GenericSubjectMaster {
   id: string;
   name: string;
-  description?: string;
+  description?: string | null;
   createdAt: string;
   updatedAt: string;
   _count?: {
     summaryTransactions: number;
-    bookGenericTags: number;
   };
 }
 
 export interface TagMaster {
   id: string;
   name: string;
-  description?: string;
-  category?: string;
+  description?: string | null;
+  category?: string | null;
   createdAt: string;
   updatedAt: string;
   _count?: {
     summaryTransactions: number;
-    bookSpecificTags: number;
   };
 }
 
@@ -37,47 +35,23 @@ export interface BookEditor {
   id: string;
   bookId: string;
   name: string;
-  role?: string;
-}
-
-export interface BookGenericTag {
-  id: string;
-  bookId: string;
-  genericSubjectId: string;
-  genericSubject: GenericSubjectMaster;
-}
-
-export interface BookSpecificTag {
-  id: string;
-  bookId: string;
-  tagId: string;
-  tag: TagMaster;
+  role?: string | null;
 }
 
 export interface BookMaster {
   id: string;
   libraryNumber: string;
   bookName: string;
-  bookSummary?: string;
-  pageNumbers?: string;
-  grade?: string;
-  remark?: string;
-  edition?: string;
-  publisherName?: string;
+  bookSummary?: string | null;
+  pageNumbers?: string | null;
+  grade?: string | null;
+  remark?: string | null;
+  edition?: string | null;
+  publisherName?: string | null;
   createdAt: string;
   updatedAt: string;
-  user?: {
-    id: string;
-    name?: string;
-    email: string;
-  };
   editors?: BookEditor[];
-  genericTags?: BookGenericTag[];
-  specificTags?: BookSpecificTag[];
   summaryTransactions?: SummaryTransaction[];
-  _count?: {
-    summaryTransactions: number;
-  };
 }
 
 export interface MultilingualText {
@@ -90,32 +64,34 @@ export interface MultilingualText {
 export interface SummaryTransaction {
   id: string;
   srNo: number;
-  title?: string;
-  keywords?: string;
-  relevantParagraph?: MultilingualText;
-  paragraphNo?: string;
-  pageNo?: string;
-  informationRating?: string;
-  remark?: string;
-  bookId: string;
-  genericSubjectId?: string;
-  specificSubjectId?: string;
+  title?: string | null;
+  keywords?: string | null;
+  relevantParagraph?: MultilingualText | any; // backend stores as Json
+  paragraphNo?: string | null;
+  pageNo?: string | null;
+  informationRating?: string | null;
+  remark?: string | null;
+  summary?: string | null;
+  conclusion?: string | null;
   createdAt: string;
   updatedAt: string;
+  bookId: string;
+  genericSubjectId?: string | null;
+  specificSubjectId?: string | null;
   book?: {
     id: string;
     bookName: string;
     libraryNumber: string;
-    bookSummary?: string;
-    pageNumbers?: string;
+    bookSummary?: string | null;
+    pageNumbers?: string | null;
   };
   user?: {
     id: string;
-    name?: string;
+    name?: string | null;
     email: string;
   };
-  genericSubject?: GenericSubjectMaster;
-  specificSubject?: TagMaster;
+  genericSubject?: GenericSubjectMaster | null;
+  specificSubject?: TagMaster | null;
 }
 
 export interface PaginationInfo {
@@ -123,12 +99,6 @@ export interface PaginationInfo {
   limit: number;
   total: number;
   pages: number;
-}
-
-export interface ApiResponse<T> {
-  data?: T;
-  error?: string;
-  message?: string;
 }
 
 export interface BooksResponse {
@@ -171,12 +141,7 @@ export interface BookFormData {
   remark?: string;
   edition?: string;
   publisherName?: string;
-  editors: Array<{
-    name: string;
-    role?: string;
-  }>;
-  genericTags: BookGenericTag[];
-  specificTags: BookSpecificTag[];
+  editors: Array<{ name: string; role?: string }>;
 }
 
 export interface TransactionFormData {
@@ -190,22 +155,38 @@ export interface TransactionFormData {
   pageNo?: string;
   informationRating?: string;
   remark?: string;
+  summary?: string;
+  conclusion?: string;
   bookId: string;
 }
 
-export interface SubjectFormData {
-  name: string;
-  description?: string;
-  category?: string;
+// Utility types
+export type InformationRating = 'High' | 'Medium' | 'Low';
+export type EditorRole = 'Editor' | 'Co-editor' | 'Chief Editor' | 'Assistant Editor';
+
+// API helpers
+export type ApiMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
+export interface ApiError { error: string; details?: string; }
+export interface UseApiResponse<T> {
+  data: T | null;
+  loading: boolean;
+  error: string | null;
+  refetch: () => Promise<void>;
+}
+export interface UseFormState<T> {
+  values: T;
+  errors: Partial<Record<keyof T, string>>;
+  touched: Partial<Record<keyof T, boolean>>;
+  isValid: boolean;
+  isDirty: boolean;
 }
 
-// Component prop interfaces
+// UI
 export interface DataTableColumn<T = any> {
   key: keyof T;
   label: string;
   render?: (value: any, row: T) => React.ReactNode;
 }
-
 export interface DataTableProps<T = any> {
   data: T[];
   columns: DataTableColumn<T>[];
@@ -215,11 +196,12 @@ export interface DataTableProps<T = any> {
   onEdit?: (row: T) => void;
   onDelete?: (row: T) => void;
   onView?: (row: T) => void;
+  onRowClick?: (row: T) => void;
+  rowClickable?: boolean;
   searchable?: boolean;
   onSearch?: (search: string) => void;
   searchPlaceholder?: string;
 }
-
 export interface ModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -227,7 +209,6 @@ export interface ModalProps {
   children: React.ReactNode;
   size?: 'sm' | 'md' | 'lg' | 'xl' | 'full';
 }
-
 export interface FormInputProps {
   label?: string;
   name: string;
@@ -238,18 +219,14 @@ export interface FormInputProps {
   error?: string;
   placeholder?: string;
   rows?: number;
-  options?: Array<{
-    value: string | number;
-    label: string;
-  }>;
+  options?: Array<{ value: string | number; label: string }>;
+  disabled?: boolean;
 }
-
 export interface AlertProps {
   type?: 'success' | 'error' | 'warning' | 'info';
   message: string;
   onClose?: () => void;
 }
-
 export interface CardProps {
   title?: string;
   children: React.ReactNode;
@@ -257,16 +234,8 @@ export interface CardProps {
   className?: string;
   headerActions?: React.ReactNode;
 }
-
-export interface BreadcrumbItem {
-  label: string;
-  href?: string;
-}
-
-export interface BreadcrumbProps {
-  items: BreadcrumbItem[];
-}
-
+export interface BreadcrumbItem { label: string; href?: string; }
+export interface BreadcrumbProps { items: BreadcrumbItem[]; }
 export interface StatsCardProps {
   title: string;
   value: string | number;
@@ -274,51 +243,11 @@ export interface StatsCardProps {
   trend?: string;
   color?: 'blue' | 'green' | 'yellow' | 'red';
 }
-
-export interface MultiSelectTagsProps {
-  label: string;
-  options: Array<{
-    id: string;
-    name: string;
-  }>;
-  selectedValues: string[];
-  onChange: (values: string[]) => void;
-  placeholder: string;
-}
-
-// Language types
 export type LanguageCode = 'english' | 'hindi' | 'gujarati' | 'sanskrit';
+export interface Language { code: LanguageCode; name: string; icon: string; }
 
-export interface Language {
-  code: LanguageCode;
+export interface SubjectFormData {
   name: string;
-  icon: string;
-}
-
-// Utility types
-export type InformationRating = 'High' | 'Medium' | 'Low';
-export type EditorRole = 'Editor' | 'Co-editor' | 'Chief Editor' | 'Assistant Editor';
-
-// API endpoint types
-export type ApiMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
-
-export interface ApiError {
-  error: string;
-  details?: string;
-}
-
-// Hook types
-export interface UseApiResponse<T> {
-  data: T | null;
-  loading: boolean;
-  error: string | null;
-  refetch: () => Promise<void>;
-}
-
-export interface UseFormState<T> {
-  values: T;
-  errors: Partial<Record<keyof T, string>>;
-  touched: Partial<Record<keyof T, boolean>>;
-  isValid: boolean;
-  isDirty: boolean;
+  description?: string;
+  category?: string;
 }
