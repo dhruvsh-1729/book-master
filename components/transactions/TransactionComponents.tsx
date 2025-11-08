@@ -118,8 +118,8 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
   const initialParagraph = normalizeParagraph(initialData?.relevantParagraph);
   const [formData, setFormData] = useState<TransactionEditorValues>({
     srNo: initialData?.srNo ?? 1,
-    genericSubjectId: initialData?.genericSubjectId || '',
-    specificSubjectId: initialData?.specificSubjectId || '',
+    genericSubjectIds: initialData?.genericSubjects?.map((subject) => subject.id) ?? [],
+    specificSubjectIds: initialData?.specificSubjects?.map((tag) => tag.id) ?? [],
     title: initialData?.title || '',
     keywords: initialData?.keywords || '',
     paragraphNo: initialData?.paragraphNo || '',
@@ -135,15 +135,14 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [selectedGeneric, setSelectedGeneric] = useState<GenericSubjectMaster | null>(initialData?.genericSubject || null);
-  const [selectedSpecific, setSelectedSpecific] = useState<TagMaster | null>(initialData?.specificSubject || null);
+  const [selectedGenerics, setSelectedGenerics] = useState<GenericSubjectMaster[]>(initialData?.genericSubjects ?? []);
+  const [selectedSpecifics, setSelectedSpecifics] = useState<TagMaster[]>(initialData?.specificSubjects ?? []);
 
   const {
     query: genericQuery,
     setQuery: setGenericQuery,
     options: genericOptions,
     loading: genericLoading,
-    fetchById: fetchGenericById,
   } = useRemoteSearch<GenericSubjectMaster>('/api/subjects/generic', 'subjects');
 
   const {
@@ -151,20 +150,7 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
     setQuery: setTagQuery,
     options: tagOptions,
     loading: tagLoading,
-    fetchById: fetchTagById,
   } = useRemoteSearch<TagMaster>('/api/subjects/tags', 'tags');
-
-  useEffect(() => {
-    if (!selectedGeneric && formData.genericSubjectId) {
-      fetchGenericById(formData.genericSubjectId).then((subject) => subject && setSelectedGeneric(subject));
-    }
-  }, [formData.genericSubjectId, selectedGeneric, fetchGenericById]);
-
-  useEffect(() => {
-    if (!selectedSpecific && formData.specificSubjectId) {
-      fetchTagById(formData.specificSubjectId).then((tag) => tag && setSelectedSpecific(tag));
-    }
-  }, [formData.specificSubjectId, selectedSpecific, fetchTagById]);
 
   const bookOptions = useMemo(() => {
     const options = books.map((book) => ({ value: book.id, label: `${book.bookName} (${book.libraryNumber})` }));
@@ -201,11 +187,7 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
     setSaving(true);
     setFormError(null);
     try {
-      await onSubmit({
-        ...formData,
-        genericSubjectId: formData.genericSubjectId || undefined,
-        specificSubjectId: formData.specificSubjectId || undefined,
-      });
+      await onSubmit({ ...formData });
     } catch (error: any) {
       setFormError(error?.message || 'Failed to save transaction');
     } finally {
@@ -215,7 +197,7 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
 
   const renderSearchResults = <T extends { id: string; name: string; description?: string | null }>(
     list: T[],
-    selectedId: string | undefined,
+    selectedIds: string[],
     onSelect: (item: T) => void,
     loading: boolean
   ) => {
@@ -235,13 +217,49 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
         type="button"
         onClick={() => onSelect(item)}
         className={`w-full text-left px-3 py-2 border-b last:border-b-0 hover:bg-blue-50 ${
-          selectedId === item.id ? 'bg-blue-50 text-blue-700' : 'bg-white text-gray-700'
+          selectedIds.includes(item.id) ? 'bg-blue-50 text-blue-700' : 'bg-white text-gray-700'
         }`}
       >
         <p className="text-sm font-medium">{item.name}</p>
         {item.description && <p className="text-xs text-gray-500">{item.description}</p>}
       </button>
     ));
+  };
+
+  const addGenericSubject = (subject: GenericSubjectMaster) => {
+    setSelectedGenerics((prev) => (prev.some((item) => item.id === subject.id) ? prev : [...prev, subject]));
+    setFormData((prev) => {
+      const ids = prev.genericSubjectIds || [];
+      if (ids.includes(subject.id)) return prev;
+      return { ...prev, genericSubjectIds: [...ids, subject.id] };
+    });
+    setGenericQuery('');
+  };
+
+  const removeGenericSubject = (id: string) => {
+    setSelectedGenerics((prev) => prev.filter((subject) => subject.id !== id));
+    setFormData((prev) => ({
+      ...prev,
+      genericSubjectIds: (prev.genericSubjectIds || []).filter((subjectId) => subjectId !== id),
+    }));
+  };
+
+  const addSpecificTag = (tag: TagMaster) => {
+    setSelectedSpecifics((prev) => (prev.some((item) => item.id === tag.id) ? prev : [...prev, tag]));
+    setFormData((prev) => {
+      const ids = prev.specificSubjectIds || [];
+      if (ids.includes(tag.id)) return prev;
+      return { ...prev, specificSubjectIds: [...ids, tag.id] };
+    });
+    setTagQuery('');
+  };
+
+  const removeSpecificTag = (id: string) => {
+    setSelectedSpecifics((prev) => prev.filter((tag) => tag.id !== id));
+    setFormData((prev) => ({
+      ...prev,
+      specificSubjectIds: (prev.specificSubjectIds || []).filter((tagId) => tagId !== id),
+    }));
   };
 
   return (
@@ -280,29 +298,32 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <label className="text-sm font-medium text-gray-700">Generic Subject</label>
-            {selectedGeneric && (
+            <label className="text-sm font-medium text-gray-700">Generic Subjects</label>
+            {selectedGenerics.length > 0 && (
               <button
                 type="button"
                 className="text-xs text-red-600"
                 onClick={() => {
-                  setSelectedGeneric(null);
-                  setFormData((prev) => ({ ...prev, genericSubjectId: '' }));
+                  setSelectedGenerics([]);
+                  setFormData((prev) => ({ ...prev, genericSubjectIds: [] }));
                   setGenericQuery('');
                 }}
               >
-                Clear
+                Clear all
               </button>
             )}
           </div>
-          {selectedGeneric ? (
-            <div className="border border-blue-200 bg-blue-50 rounded-md p-3">
-              <p className="text-sm font-medium text-blue-900">{selectedGeneric.name}</p>
-              {selectedGeneric.description && <p className="text-xs text-blue-800 mt-1">{selectedGeneric.description}</p>}
-            </div>
-          ) : (
-            <p className="text-xs text-gray-500">No generic subject selected</p>
-          )}
+          <div className="min-h-[44px] rounded-md border border-dashed border-blue-200 bg-blue-50/40 p-2 flex flex-wrap gap-2">
+            {selectedGenerics.length === 0 && <p className="text-xs text-gray-500">No generic subjects selected</p>}
+            {selectedGenerics.map((subject) => (
+              <span key={subject.id} className="inline-flex items-center rounded-full bg-blue-100 px-2 py-1 text-xs text-blue-800">
+                {subject.name}
+                <button type="button" className="ml-1 text-blue-600 hover:text-blue-900" onClick={() => removeGenericSubject(subject.id)}>
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
           <input
             type="text"
             value={genericQuery}
@@ -311,44 +332,38 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
             className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
           <div className="border border-gray-200 rounded-md max-h-48 overflow-y-auto bg-white">
-            {renderSearchResults(
-              genericOptions,
-              formData.genericSubjectId,
-              (item) => {
-                setSelectedGeneric(item);
-                setFormData((prev) => ({ ...prev, genericSubjectId: item.id }));
-                setGenericQuery(item.name);
-              },
-              genericLoading
-            )}
+            {renderSearchResults(genericOptions, formData.genericSubjectIds || [], addGenericSubject, genericLoading)}
           </div>
         </div>
 
         <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <label className="text-sm font-medium text-gray-700">Specific Tag</label>
-            {selectedSpecific && (
+            <label className="text-sm font-medium text-gray-700">Specific Tags</label>
+            {selectedSpecifics.length > 0 && (
               <button
                 type="button"
                 className="text-xs text-red-600"
                 onClick={() => {
-                  setSelectedSpecific(null);
-                  setFormData((prev) => ({ ...prev, specificSubjectId: '' }));
+                  setSelectedSpecifics([]);
+                  setFormData((prev) => ({ ...prev, specificSubjectIds: [] }));
                   setTagQuery('');
                 }}
               >
-                Clear
+                Clear all
               </button>
             )}
           </div>
-          {selectedSpecific ? (
-            <div className="border border-green-200 bg-green-50 rounded-md p-3">
-              <p className="text-sm font-medium text-green-900">{selectedSpecific.name}</p>
-              {selectedSpecific.description && <p className="text-xs text-green-800 mt-1">{selectedSpecific.description}</p>}
-            </div>
-          ) : (
-            <p className="text-xs text-gray-500">No specific tag selected</p>
-          )}
+          <div className="min-h-[44px] rounded-md border border-dashed border-green-200 bg-green-50/40 p-2 flex flex-wrap gap-2">
+            {selectedSpecifics.length === 0 && <p className="text-xs text-gray-500">No specific tags selected</p>}
+            {selectedSpecifics.map((tag) => (
+              <span key={tag.id} className="inline-flex items-center rounded-full bg-green-100 px-2 py-1 text-xs text-green-800">
+                {tag.name}
+                <button type="button" className="ml-1 text-green-600 hover:text-green-900" onClick={() => removeSpecificTag(tag.id)}>
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
           <input
             type="text"
             value={tagQuery}
@@ -357,16 +372,7 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
             className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
           />
           <div className="border border-gray-200 rounded-md max-h-48 overflow-y-auto bg-white">
-            {renderSearchResults(
-              tagOptions,
-              formData.specificSubjectId,
-              (item) => {
-                setSelectedSpecific(item);
-                setFormData((prev) => ({ ...prev, specificSubjectId: item.id }));
-                setTagQuery(item.name);
-              },
-              tagLoading
-            )}
+            {renderSearchResults(tagOptions, formData.specificSubjectIds || [], addSpecificTag, tagLoading)}
           </div>
         </div>
       </div>
@@ -449,8 +455,22 @@ export const TransactionDetailView: React.FC<{ transaction: SummaryTransaction }
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <DetailItem label="Serial Number" value={`#${transaction.srNo}`} />
         <DetailItem label="Book" value={`${transaction.book?.bookName || 'Unknown'} (${transaction.book?.libraryNumber || '—'})`} />
-        <DetailItem label="Generic Subject" value={transaction.genericSubject?.name || 'Not set'} />
-        <DetailItem label="Specific Tag" value={transaction.specificSubject?.name || 'Not set'} />
+        <DetailItem
+          label="Generic Subjects"
+          value={
+            transaction.genericSubjects && transaction.genericSubjects.length
+              ? transaction.genericSubjects.map((subject) => subject.name).join(', ')
+              : 'Not set'
+          }
+        />
+        <DetailItem
+          label="Specific Tags"
+          value={
+            transaction.specificSubjects && transaction.specificSubjects.length
+              ? transaction.specificSubjects.map((tag) => tag.name).join(', ')
+              : 'Not set'
+          }
+        />
         <DetailItem label="Paragraph" value={transaction.paragraphNo || '—'} />
         <DetailItem label="Page" value={transaction.pageNo || '—'} />
         <DetailItem label="Rating" value={transaction.informationRating || '—'} />

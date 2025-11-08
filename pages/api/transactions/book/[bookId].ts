@@ -10,6 +10,22 @@ const toInt = (v: unknown, def = 1, min = 1, max?: number): number => {
   return max ? Math.min(clamped, max) : clamped;
 };
 
+const transactionInclude = {
+  user: { select: { id: true, name: true, email: true } },
+  genericSubjects: { include: { genericSubject: true } },
+  specificSubjects: { include: { tag: true } },
+} as const;
+
+const mapTransaction = (transaction: any) => ({
+  ...transaction,
+  genericSubjects: (transaction.genericSubjects || [])
+    .map((link: any) => link.genericSubject)
+    .filter(Boolean),
+  specificSubjects: (transaction.specificSubjects || [])
+    .map((link: any) => link.tag)
+    .filter(Boolean),
+});
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") {
     res.setHeader("Allow", ["GET"]);
@@ -50,17 +66,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     };
 
     const [transactions, total] = await Promise.all([
-      prisma.summaryTransaction.findMany({
-        where,
-        include: {
-          user: { select: { id: true, name: true, email: true } },
-          genericSubject: true,
-          specificSubject: true,
-        },
-        skip: (page - 1) * limit,
-        take: limit,
-        orderBy: [{ srNo: "asc" }],
-      }),
+      prisma.summaryTransaction
+        .findMany({
+          where,
+          include: transactionInclude,
+          skip: (page - 1) * limit,
+          take: limit,
+          orderBy: [{ srNo: "asc" }],
+        })
+        .then((list) => list.map(mapTransaction)),
       prisma.summaryTransaction.count({ where }),
     ]);
 

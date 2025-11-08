@@ -1,6 +1,6 @@
 // components/Layout.tsx
 // Updated components/Layout.tsx - Add user info and logout
-import React, { useState, ReactNode } from 'react';
+import React, { useState, ReactNode, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useAuth } from '../hooks/useAuth';
@@ -14,8 +14,12 @@ import {
   Search,
   User,
   Settings,
-  LogOut
+  LogOut,
+  UploadCloud,
+  Download
 } from 'lucide-react';
+import { Modal, FormInput, Alert, LoadingSpinner } from './CoreComponents';
+import { BookMaster, GenericSubjectMaster, TagMaster } from '../types';
 
 
 interface LayoutProps {
@@ -31,6 +35,33 @@ interface NavigationItem {
 // Main Layout Component
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [importState, setImportState] = useState({
+    fileName: '',
+    csvText: '',
+    loading: false,
+    error: '',
+    stats: null as null | { created: number; skipped: number },
+  });
+  const [exportFilters, setExportFilters] = useState({
+    bookId: '',
+    genericSubjectId: '',
+    specificSubjectId: '',
+    search: '',
+  });
+  const [exportState, setExportState] = useState({
+    loading: false,
+    error: '',
+    success: '',
+  });
+  const [exportOptions, setExportOptions] = useState({
+    books: [] as BookMaster[],
+    genericSubjects: [] as GenericSubjectMaster[],
+    specificTags: [] as TagMaster[],
+  });
+  const [optionsLoaded, setOptionsLoaded] = useState(false);
+  const [optionsLoading, setOptionsLoading] = useState(false);
   const router = useRouter();
 
   const navigation: NavigationItem[] = [
@@ -45,6 +76,131 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       return router.pathname === '/';
     }
     return router.pathname.startsWith(href);
+  };
+
+  useEffect(() => {
+    if (!showExportModal || optionsLoaded || optionsLoading) return;
+    const loadOptions = async () => {
+      setOptionsLoading(true);
+      try {
+        const [booksRes, genericRes, tagsRes] = await Promise.all([
+          fetch('/api/books?limit=200'),
+          fetch('/api/subjects/generic?limit=200'),
+          fetch('/api/subjects/tags?limit=200'),
+        ]);
+        const [booksJson, genericJson, tagsJson] = await Promise.all([booksRes.json(), genericRes.json(), tagsRes.json()]);
+        setExportOptions({
+          books: booksJson.books || [],
+          genericSubjects: genericJson.subjects || [],
+          specificTags: tagsJson.tags || [],
+        });
+        setOptionsLoaded(true);
+      } catch (error) {
+        console.error('Failed to load export options', error);
+        setExportState((prev) => ({ ...prev, error: 'Failed to load filter options' }));
+      } finally {
+        setOptionsLoading(false);
+      }
+    };
+    loadOptions();
+  }, [showExportModal, optionsLoaded, optionsLoading]);
+
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const content = e.target?.result ?? '';
+      setImportState((prev) => ({
+        ...prev,
+        csvText: typeof content === 'string' ? content : '',
+        fileName: file.name,
+        error: '',
+        stats: null,
+      }));
+    };
+    reader.readAsText(file);
+  };
+
+  const triggerImport = async () => {
+    if (!importState.csvText.trim()) {
+      setImportState((prev) => ({ ...prev, error: 'Please select a CSV file first.' }));
+      return;
+    }
+    setImportState((prev) => ({ ...prev, loading: true, error: '' }));
+    try {
+      const response = await fetch('/api/book-import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ csvText: importState.csvText }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || 'Failed to import CSV');
+      setImportState((prev) => ({
+        ...prev,
+        loading: false,
+        stats: data?.stats || null,
+        error: '',
+      }));
+    } catch (error: any) {
+      setImportState((prev) => ({
+        ...prev,
+        loading: false,
+        error: error?.message || 'Import failed',
+      }));
+    }
+  };
+
+  const resetImportModal = () => {
+    setImportState({
+      fileName: '',
+      csvText: '',
+      loading: false,
+      error: '',
+      stats: null,
+    });
+    setShowImportModal(false);
+  };
+
+  const updateExportFilter = (name: keyof typeof exportFilters, value: string) => {
+    setExportFilters((prev) => ({ ...prev, [name]: value }));
+    setExportState((prev) => ({ ...prev, error: '', success: '' }));
+  };
+
+  const triggerExport = async () => {
+    if (!exportFilters.bookId) {
+      setExportState((prev) => ({ ...prev, error: 'Select a book to export.' }));
+      return;
+    }
+    setExportState({ loading: true, error: '', success: '' });
+    try {
+      const params = new URLSearchParams();
+      Object.entries(exportFilters).forEach(([key, value]) => {
+        if (value) params.append(key, value);
+      });
+      const response = await fetch(`/api/book-import?${params.toString()}`);
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error?.error || 'Failed to export CSV');
+      }
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `book-export-${exportFilters.bookId}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      setExportState({ loading: false, error: '', success: 'Export ready. Check your downloads.' });
+    } catch (error: any) {
+      setExportState({ loading: false, error: error?.message || 'Export failed', success: '' });
+    }
+  };
+
+  const closeExportModal = () => {
+    setShowExportModal(false);
+    setExportState({ loading: false, error: '', success: '' });
   };
 
   return (
@@ -83,13 +239,153 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
       {/* Main content */}
       <div className="md:pl-64 flex flex-col flex-1">
-        <Header onMenuClick={() => setSidebarOpen(true)} />
+        <Header
+          onMenuClick={() => setSidebarOpen(true)}
+          onImportClick={() => setShowImportModal(true)}
+          onExportClick={() => setShowExportModal(true)}
+        />
         <main className="flex-1">
           <div className="py-6 px-4 sm:px-6 lg:px-8">
             {children}
           </div>
         </main>
       </div>
+
+      {/* Import Modal */}
+      {showImportModal && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-auto">
+            <div className="px-6 py-4 border-b border-gray-200">
+              <h3 className="text-lg leading-6 font-medium text-gray-900">Import Book & Summary Transactions</h3>
+            </div>
+            <div className="px-6 py-4 space-y-4">
+              {importState.error && <Alert type="error" message={importState.error} onClose={() => setImportState((prev) => ({ ...prev, error: '' }))} />}
+              {importState.stats && (
+                <Alert
+                  type="success"
+                  message={`Import complete. Created ${importState.stats.created} transaction(s), skipped ${importState.stats.skipped}.`}
+                  onClose={() => setImportState((prev) => ({ ...prev, stats: null }))}
+                />
+              )}
+
+              <div className="space-y-2">
+                <label className="block text-sm font-medium text-gray-700">Upload CSV</label>
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  onChange={handleFileChange}
+                  className="w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-600 hover:file:bg-blue-100"
+                />
+                {importState.fileName && <p className="text-xs text-gray-500">Selected: {importState.fileName}</p>}
+              </div>
+
+              <p className="text-sm text-gray-600">
+                The first data row should contain book details. Subsequent rows will create summary transactions. Blank cells in the Title, Generic Subject, or Specific Tag
+                columns automatically reuse the last non-empty value above them.
+              </p>
+            </div>
+            <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-end space-x-3">
+              <button
+                onClick={resetImportModal}
+                className="px-4 py-2 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                disabled={importState.loading}
+              >
+                Close
+              </button>
+              <button
+                onClick={triggerImport}
+                disabled={!importState.csvText || importState.loading}
+                className="px-4 py-2 rounded-md text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-60"
+              >
+                {importState.loading ? 'Importing...' : 'Start Import'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Export Modal */}
+      {showExportModal && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-auto">
+            <div className="px-6 py-4 border-b border-gray-200">
+              <h3 className="text-lg leading-6 font-medium text-gray-900">Export Book & Summary Transactions</h3>
+            </div>
+            <div className="px-6 py-4 space-y-4">
+              {exportState.error && <Alert type="error" message={exportState.error} onClose={() => setExportState((prev) => ({ ...prev, error: '' }))} />}
+              {exportState.success && <Alert type="success" message={exportState.success} onClose={() => setExportState((prev) => ({ ...prev, success: '' }))} />}
+
+              {optionsLoading && (
+                <div className="flex items-center justify-center py-6">
+                  <LoadingSpinner />
+                </div>
+              )}
+
+              {!optionsLoading && (
+                <>
+                  <FormInput
+                    label="Book"
+                    name="bookId"
+                    type="select"
+                    value={exportFilters.bookId}
+                    onChange={(e) => updateExportFilter('bookId', e.target.value)}
+                    options={exportOptions.books.map((bookOption) => ({
+                      value: bookOption.id,
+                      label: `${bookOption.bookName} (${bookOption.libraryNumber})`,
+                    }))}
+                    required
+                  />
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <FormInput
+                      label="Generic Subject"
+                      name="genericSubjectId"
+                      type="select"
+                      value={exportFilters.genericSubjectId}
+                      onChange={(e) => updateExportFilter('genericSubjectId', e.target.value)}
+                      options={exportOptions.genericSubjects.map((subject) => ({ value: subject.id, label: subject.name }))}
+                    />
+                    <FormInput
+                      label="Specific Tag"
+                      name="specificSubjectId"
+                      type="select"
+                      value={exportFilters.specificSubjectId}
+                      onChange={(e) => updateExportFilter('specificSubjectId', e.target.value)}
+                      options={exportOptions.specificTags.map((tag) => ({ value: tag.id, label: tag.name }))}
+                    />
+                  </div>
+
+                  <FormInput
+                    label="Search keyword"
+                    name="search"
+                    value={exportFilters.search}
+                    onChange={(e) => updateExportFilter('search', e.target.value)}
+                    placeholder="Optional text filter"
+                  />
+
+                  <p className="text-sm text-gray-600">Exports match the import template exactly. You can immediately re-import the downloaded file after editing.</p>
+                </>
+              )}
+            </div>
+            <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-end space-x-3">
+              <button
+                onClick={closeExportModal}
+                className="px-4 py-2 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                disabled={exportState.loading}
+              >
+                Close
+              </button>
+              <button
+                onClick={triggerExport}
+                disabled={exportState.loading || !exportFilters.bookId}
+                className="px-4 py-2 rounded-md text-sm font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-60"
+              >
+                {exportState.loading ? 'Preparing...' : 'Download CSV'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -206,9 +502,11 @@ const MobileSidebar: React.FC<SidebarProps> = ({ navigation, isActive }) => {
 // Header Component
 interface HeaderProps {
   onMenuClick: () => void;
+  onImportClick: () => void;
+  onExportClick: () => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
+const Header: React.FC<HeaderProps> = ({ onMenuClick, onImportClick, onExportClick }) => {
   const [searchTerm, setSearchTerm] = useState<string>('');
 
   const handleGlobalSearch = (e: React.FormEvent) => {
@@ -256,7 +554,23 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
           </div>
         </div>
 
-        <div className="ml-4 flex items-center md:ml-6 space-x-4">
+        <div className="ml-4 flex items-center md:ml-6 space-x-3">
+          <button
+            onClick={onImportClick}
+            className="inline-flex items-center px-3 py-2 rounded-md border border-gray-300 text-sm font-medium text-gray-700 bg-white hover:bg-gray-50"
+          >
+            <UploadCloud className="h-4 w-4 mr-2 text-blue-600" />
+            <span className="hidden sm:inline">Import</span>
+            <span className="sm:hidden">Import</span>
+          </button>
+          <button
+            onClick={onExportClick}
+            className="inline-flex items-center px-3 py-2 rounded-md border border-transparent text-sm font-medium text-white bg-blue-600 hover:bg-blue-700"
+          >
+            <Download className="h-4 w-4 mr-2" />
+            <span className="hidden sm:inline">Export</span>
+            <span className="sm:hidden">Export</span>
+          </button>
           <button className="p-1 rounded-full text-gray-400 hover:text-gray-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
             <Settings className="h-5 w-5" />
           </button>

@@ -76,8 +76,6 @@ export interface SummaryTransaction {
   createdAt: string;
   updatedAt: string;
   bookId: string;
-  genericSubjectId?: string | null;
-  specificSubjectId?: string | null;
   book?: {
     id: string;
     bookName: string;
@@ -90,8 +88,8 @@ export interface SummaryTransaction {
     name?: string | null;
     email: string;
   };
-  genericSubject?: GenericSubjectMaster | null;
-  specificSubject?: TagMaster | null;
+  genericSubjects?: GenericSubjectMaster[];
+  specificSubjects?: TagMaster[];
 }
 
 export interface PaginationInfo {
@@ -146,8 +144,8 @@ export interface BookFormData {
 
 export interface TransactionFormData {
   srNo: number;
-  genericSubjectId?: string;
-  specificSubjectId?: string;
+  genericSubjectIds?: string[];
+  specificSubjectIds?: string[];
   title?: string;
   keywords?: string;
   relevantParagraph: MultilingualText;

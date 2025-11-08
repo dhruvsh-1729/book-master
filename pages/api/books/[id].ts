@@ -6,6 +6,16 @@ import { getUserIdFromRequest } from "@/lib/auth";
 const toStr = (v: unknown, fallback = ""): string =>
   typeof v === "string" ? v : Array.isArray(v) ? (v[0] ?? fallback) : fallback;
 
+const mapSummaryTransaction = (transaction: any) => ({
+  ...transaction,
+  genericSubjects: (transaction.genericSubjects || [])
+    .map((link: any) => link.genericSubject)
+    .filter(Boolean),
+  specificSubjects: (transaction.specificSubjects || [])
+    .map((link: any) => link.tag)
+    .filter(Boolean),
+});
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const userId = getUserIdFromRequest(req);
   if (!userId) return res.status(401).json({ error: "Authentication required" });
@@ -22,8 +32,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         include.transactions = {
           orderBy: [{ srNo: "asc" }],
           include: {
-            genericSubject: true,
-            specificSubject: true,
+            genericSubjects: { include: { genericSubject: true } },
+            specificSubjects: { include: { tag: true } },
             user: { select: { id: true, name: true, email: true } },
             book: {
               select: {
@@ -50,7 +60,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         editors: editor ?? [],
       };
       if (includeTransactions) {
-        payload.summaryTransactions = transactions ?? [];
+        payload.summaryTransactions = (transactions ?? []).map(mapSummaryTransaction);
       }
       return res.status(200).json(payload);
     } catch (e) {

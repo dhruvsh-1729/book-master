@@ -97,6 +97,14 @@ function maybeParseJSON(v) {
   }
 }
 
+function splitMultiValues(value) {
+  if (!truthy(value)) return [];
+  return String(value)
+    .split(/[,;|]/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
 async function main() {
   const csvPath = path.resolve(process.cwd(), 'index.csv');
   if (!fs.existsSync(csvPath)) {
@@ -183,35 +191,27 @@ async function main() {
   // STEP 2: From line 3 onward, only create SummaryTransaction rows pointing to the same book
   let created = 0;
   let skipped = 0;
+  let lastTitle = '';
+  let lastGenericNames = [];
+  let lastSpecificNames = [];
 
   for (let i = 1; i < records.length; i++) {
     const row = records[i];
 
-    // Upsert subjects/tags
-    const genericName = pickCol(row, COLS.genericSubjectName);
-    let generic = null;
-    if (truthy(genericName)) {
-      generic = await prisma.genericSubjectMaster.upsert({
-        where: { name: genericName },
-        update: {},
-        create: { name: genericName },
-      });
-    }
-
-    const specificName = pickCol(row, COLS.specificTagName);
-    const tagCategory = pickCol(row, COLS.tagCategory) || null;
-    let tag = null;
-    if (truthy(specificName)) {
-      tag = await prisma.tagMaster.upsert({
-        where: { name: specificName },
-        update: tagCategory ? { category: tagCategory } : {},
-        create: { name: specificName, category: tagCategory },
-      });
-    }
-
     // Transaction fields
     const srNo = pickInt(row, COLS.srNo);
-    const title = pickCol(row, COLS.title);
+    let title = pickCol(row, COLS.title);
+    if (truthy(title)) lastTitle = title;
+    else if (lastTitle) title = lastTitle;
+
+    let genericNames = splitMultiValues(pickCol(row, COLS.genericSubjectName));
+    if (genericNames.length) lastGenericNames = genericNames;
+    else if (lastGenericNames.length) genericNames = [...lastGenericNames];
+
+    let specificNames = splitMultiValues(pickCol(row, COLS.specificTagName));
+    if (specificNames.length) lastSpecificNames = specificNames;
+    else if (lastSpecificNames.length) specificNames = [...lastSpecificNames];
+
     const keywords = pickCol(row, COLS.keywords) || null;
     const relevantParagraph = maybeParseJSON(pickCol(row, COLS.relevantParagraph));
     const paragraphNo = pickCol(row, COLS.paragraphNo) || null;
@@ -220,6 +220,7 @@ async function main() {
     const itemRemark = pickCol(row, COLS.itemRemark) || null;
     const summary = pickCol(row, COLS.summary) || null;
     const conclusion = pickCol(row, COLS.conclusion) || null;
+    const tagCategory = pickCol(row, COLS.tagCategory) || null;
 
     // Minimal validity check
     // if (!truthy(title) && (srNo === undefined || srNo === null)) {
@@ -228,6 +229,30 @@ async function main() {
     // }
 
     try {
+      const genericRecords = genericNames.length
+        ? await Promise.all(
+            genericNames.map((name) =>
+              prisma.genericSubjectMaster.upsert({
+                where: { name },
+                update: {},
+                create: { name },
+              })
+            )
+          )
+        : [];
+
+      const specificRecords = specificNames.length
+        ? await Promise.all(
+            specificNames.map((name) =>
+              prisma.tagMaster.upsert({
+                where: { name },
+                update: tagCategory ? { category: tagCategory } : {},
+                create: { name, category: tagCategory },
+              })
+            )
+          )
+        : [];
+
       await prisma.summaryTransaction.create({
         data: {
           srNo: Number.isFinite(srNo) ? srNo : 0,
@@ -243,8 +268,20 @@ async function main() {
 
           bookId: book.id,
           userId: user.id,
-          genericSubjectId: generic ? generic.id : null,
-          specificSubjectId: tag ? tag.id : null,
+          genericSubjects: genericRecords.length
+            ? {
+                create: genericRecords.map((record) => ({
+                  genericSubject: { connect: { id: record.id } },
+                })),
+              }
+            : undefined,
+          specificSubjects: specificRecords.length
+            ? {
+                create: specificRecords.map((record) => ({
+                  tag: { connect: { id: record.id } },
+                })),
+              }
+            : undefined,
         },
       });
       created++;
