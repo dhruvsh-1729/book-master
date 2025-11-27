@@ -105,6 +105,15 @@ function splitMultiValues(value) {
     .filter(Boolean);
 }
 
+const normalizeText = (value) =>
+  value && typeof value === 'string'
+    ? value
+        .normalize('NFKC')
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim()
+    : '';
+
 async function main() {
   const csvPath = path.resolve(process.cwd(), 'index.csv');
   if (!fs.existsSync(csvPath)) {
@@ -195,6 +204,8 @@ async function main() {
   let lastGenericNames = [];
   let lastSpecificNames = [];
 
+  const seenKeys = new Set();
+
   for (let i = 1; i < records.length; i++) {
     const row = records[i];
 
@@ -212,6 +223,17 @@ async function main() {
     if (specificNames.length) lastSpecificNames = specificNames;
     else if (lastSpecificNames.length) specificNames = [...lastSpecificNames];
 
+  const srNoValue = Number.isFinite(srNo) ? srNo : null;
+  const normalizedTitleKey = normalizeText(title || '');
+  const dedupeKey = `${srNoValue ?? 'nosr'}::${normalizedTitleKey || `row-${i + 1}`}`;
+
+    if (seenKeys.has(dedupeKey)) {
+      console.log(`↩️  Skipping duplicate row ${i + 1} within file (srNo/title match).`);
+      skipped++;
+      continue;
+    }
+    seenKeys.add(dedupeKey);
+
     const keywords = pickCol(row, COLS.keywords) || null;
     const relevantParagraph = maybeParseJSON(pickCol(row, COLS.relevantParagraph));
     const paragraphNo = pickCol(row, COLS.paragraphNo) || null;
@@ -227,6 +249,32 @@ async function main() {
     //   skipped++;
     //   continue;
     // }
+
+    const baseData = {
+      srNo: srNoValue ?? 0,
+      title: truthy(title) ? title : null,
+      keywords,
+      relevantParagraph: relevantParagraph ?? null,
+      paragraphNo,
+      pageNo,
+      informationRating,
+      remark: itemRemark,
+      summary,
+      conclusion,
+      bookId: book.id,
+      userId: user.id,
+    };
+
+    let existing = null;
+    if (srNoValue !== null) {
+      existing = await prisma.summaryTransaction.findFirst({
+        where: { bookId: book.id, userId: user.id, srNo: srNoValue },
+      });
+    } else if (truthy(title)) {
+      existing = await prisma.summaryTransaction.findFirst({
+        where: { bookId: book.id, userId: user.id, title: title },
+      });
+    }
 
     try {
       const genericRecords = genericNames.length
@@ -253,38 +301,56 @@ async function main() {
           )
         : [];
 
-      await prisma.summaryTransaction.create({
-        data: {
-          srNo: Number.isFinite(srNo) ? srNo : 0,
-          title: truthy(title) ? title : null,
-          keywords,
-          relevantParagraph: relevantParagraph ?? null,
-          paragraphNo,
-          pageNo,
-          informationRating,
-          remark: itemRemark,
-          summary,
-          conclusion,
+      const genericRelationData = genericRecords.length
+        ? {
+            deleteMany: {},
+            create: genericRecords.map((record) => ({
+              genericSubject: { connect: { id: record.id } },
+            })),
+          }
+        : { deleteMany: {} };
 
-          bookId: book.id,
-          userId: user.id,
-          genericSubjects: genericRecords.length
-            ? {
-                create: genericRecords.map((record) => ({
-                  genericSubject: { connect: { id: record.id } },
-                })),
-              }
-            : undefined,
-          specificSubjects: specificRecords.length
-            ? {
-                create: specificRecords.map((record) => ({
-                  tag: { connect: { id: record.id } },
-                })),
-              }
-            : undefined,
-        },
-      });
-      created++;
+      const specificRelationData = specificRecords.length
+        ? {
+            deleteMany: {},
+            create: specificRecords.map((record) => ({
+              tag: { connect: { id: record.id } },
+            })),
+          }
+        : { deleteMany: {} };
+
+      if (existing) {
+        await prisma.summaryTransaction.update({
+          where: { id: existing.id },
+          data: {
+            ...baseData,
+            genericSubjects: genericRelationData,
+            specificSubjects: specificRelationData,
+          },
+        });
+        console.log(`♻️  Updated existing transaction (srNo: ${srNoValue ?? 'n/a'}, title: ${title || lastTitle || 'n/a'})`);
+      } else {
+        await prisma.summaryTransaction.create({
+          data: {
+            ...baseData,
+            genericSubjects: genericRecords.length
+              ? {
+                  create: genericRecords.map((record) => ({
+                    genericSubject: { connect: { id: record.id } },
+                  })),
+                }
+              : undefined,
+            specificSubjects: specificRecords.length
+              ? {
+                  create: specificRecords.map((record) => ({
+                    tag: { connect: { id: record.id } },
+                  })),
+                }
+              : undefined,
+          },
+        });
+        created++;
+      }
     } catch (err) {
       console.error(`⚠️ Failed to create SummaryTransaction for CSV row ${i + 2}:`, err.message || err);
       skipped++;

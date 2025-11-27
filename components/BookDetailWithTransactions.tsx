@@ -207,6 +207,16 @@ const BookDetailWithTransactions: React.FC<BookDetailWithTransactionsProps> = ({
       render: (value: number) => <span className="font-mono text-sm bg-gray-100 px-2 py-1 rounded">{value}</span>,
     },
     {
+      key: 'imageUrl',
+      label: 'Image',
+      render: (value: string | null) =>
+        value ? (
+          <span className="inline-flex px-2 py-1 rounded-full text-[11px] font-medium bg-purple-100 text-purple-800">Attached</span>
+        ) : (
+          <span className="text-gray-400 text-xs">None</span>
+        ),
+    },
+    {
       key: 'genericSubjects',
       label: 'Generic Subjects',
       render: (value: GenericSubjectMaster[] | undefined) =>
@@ -337,6 +347,22 @@ const BookDetailWithTransactions: React.FC<BookDetailWithTransactionsProps> = ({
           </div>
 
           <div className="space-y-4">
+            {book.coverImageUrl && (
+              <div className="space-y-2">
+                <div className="overflow-hidden rounded-lg border border-gray-200 bg-black/5">
+                  <img src={book.coverImageUrl} alt={`${book.bookName} cover`} className="h-72 w-full object-contain" />
+                </div>
+                <a
+                  href={book.coverImageUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs text-blue-600 hover:text-blue-700 inline-flex items-center gap-1"
+                >
+                  View full image
+                </a>
+              </div>
+            )}
+
             {book.editors && book.editors.length > 0 && (
               <div>
                 <h4 className="text-sm font-medium text-gray-700 mb-2">Editors</h4>

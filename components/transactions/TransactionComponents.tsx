@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { FormInput, Alert, LoadingSpinner } from '../CoreComponents';
 import {
   SummaryTransaction,
@@ -11,6 +11,7 @@ import {
   LanguageCode,
 } from '../../types';
 import { useDebounce } from '../../hooks/useDebounce';
+import ImageUploader from '../ImageUploader';
 
 type RemoteCollectionKey = 'subjects' | 'tags';
 
@@ -128,6 +129,9 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
     remark: initialData?.remark || '',
     summary: initialData?.summary || '',
     conclusion: initialData?.conclusion || '',
+    footNote: initialData?.footNote || '',
+    imageUrl: initialData?.imageUrl || '',
+    imagePublicId: initialData?.imagePublicId || '',
     bookId: initialData?.bookId || defaultBookId || '',
     relevantParagraph: initialParagraph,
   });
@@ -137,6 +141,16 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
   const [saving, setSaving] = useState(false);
   const [selectedGenerics, setSelectedGenerics] = useState<GenericSubjectMaster[]>(initialData?.genericSubjects ?? []);
   const [selectedSpecifics, setSelectedSpecifics] = useState<TagMaster[]>(initialData?.specificSubjects ?? []);
+  const [defaultGenerics, setDefaultGenerics] = useState<GenericSubjectMaster[]>([]);
+  const [defaultSpecifics, setDefaultSpecifics] = useState<TagMaster[]>([]);
+  const [newGenericName, setNewGenericName] = useState('');
+  const [newGenericDesc, setNewGenericDesc] = useState('');
+  const [newGenericError, setNewGenericError] = useState<string | null>(null);
+  const [newGenericSaving, setNewGenericSaving] = useState(false);
+  const [newTagName, setNewTagName] = useState('');
+  const [newTagCategory, setNewTagCategory] = useState('');
+  const [newTagError, setNewTagError] = useState<string | null>(null);
+  const [newTagSaving, setNewTagSaving] = useState(false);
 
   const {
     query: genericQuery,
@@ -187,7 +201,12 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
     setSaving(true);
     setFormError(null);
     try {
-      await onSubmit({ ...formData });
+      await onSubmit({
+        ...formData,
+        imageUrl: formData.imageUrl || null,
+        imagePublicId: formData.imagePublicId || null,
+        footNote: formData.footNote || null,
+      });
     } catch (error: any) {
       setFormError(error?.message || 'Failed to save transaction');
     } finally {
@@ -226,7 +245,7 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
     ));
   };
 
-  const addGenericSubject = (subject: GenericSubjectMaster) => {
+  const addGenericSubject = useCallback((subject: GenericSubjectMaster) => {
     setSelectedGenerics((prev) => (prev.some((item) => item.id === subject.id) ? prev : [...prev, subject]));
     setFormData((prev) => {
       const ids = prev.genericSubjectIds || [];
@@ -234,7 +253,7 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
       return { ...prev, genericSubjectIds: [...ids, subject.id] };
     });
     setGenericQuery('');
-  };
+  }, []);
 
   const removeGenericSubject = (id: string) => {
     setSelectedGenerics((prev) => prev.filter((subject) => subject.id !== id));
@@ -244,7 +263,7 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
     }));
   };
 
-  const addSpecificTag = (tag: TagMaster) => {
+  const addSpecificTag = useCallback((tag: TagMaster) => {
     setSelectedSpecifics((prev) => (prev.some((item) => item.id === tag.id) ? prev : [...prev, tag]));
     setFormData((prev) => {
       const ids = prev.specificSubjectIds || [];
@@ -252,6 +271,77 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
       return { ...prev, specificSubjectIds: [...ids, tag.id] };
     });
     setTagQuery('');
+  }, []);
+
+  useEffect(() => {
+    const loadDefaults = async () => {
+      try {
+        const res = await fetch('/api/users/defaults');
+        if (!res.ok) return;
+        const data = await res.json();
+        const gen = (data.genericSubjects || []) as GenericSubjectMaster[];
+        const spec = (data.specificTags || []) as TagMaster[];
+        setDefaultGenerics(gen);
+        setDefaultSpecifics(spec);
+        if (mode === 'create') {
+          gen.forEach(addGenericSubject);
+          spec.forEach(addSpecificTag);
+        }
+      } catch (e) {
+        console.error('Failed to load defaults', e);
+      }
+    };
+    loadDefaults();
+  }, [mode, addGenericSubject, addSpecificTag]);
+
+  const createGenericSubject = async () => {
+    if (!newGenericName.trim()) {
+      setNewGenericError('Name is required');
+      return;
+    }
+    setNewGenericSaving(true);
+    setNewGenericError(null);
+    try {
+      const res = await fetch('/api/subjects/generic', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newGenericName.trim(), description: newGenericDesc.trim() || undefined }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Failed to create subject');
+      addGenericSubject(data as GenericSubjectMaster);
+      setNewGenericName('');
+      setNewGenericDesc('');
+    } catch (e: any) {
+      setNewGenericError(e?.message || 'Unable to create subject');
+    } finally {
+      setNewGenericSaving(false);
+    }
+  };
+
+  const createSpecificTag = async () => {
+    if (!newTagName.trim()) {
+      setNewTagError('Name is required');
+      return;
+    }
+    setNewTagSaving(true);
+    setNewTagError(null);
+    try {
+      const res = await fetch('/api/subjects/tags', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newTagName.trim(), category: newTagCategory.trim() || undefined }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Failed to create tag');
+      addSpecificTag(data as TagMaster);
+      setNewTagName('');
+      setNewTagCategory('');
+    } catch (e: any) {
+      setNewTagError(e?.message || 'Unable to create tag');
+    } finally {
+      setNewTagSaving(false);
+    }
   };
 
   const removeSpecificTag = (id: string) => {
@@ -295,6 +385,21 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
       <FormInput label="Title / Heading" name="title" value={formData.title} onChange={handleInputChange} placeholder="Enter title or heading" />
       <FormInput label="Keywords" name="keywords" value={formData.keywords} onChange={handleInputChange} placeholder="Comma separated keywords" />
 
+      <ImageUploader
+        label="Reference Image"
+        value={formData.imageUrl ? { url: formData.imageUrl, publicId: formData.imagePublicId } : null}
+        onChange={(val) =>
+          setFormData((prev) => ({
+            ...prev,
+            imageUrl: val?.url ?? '',
+            imagePublicId: val?.publicId ?? '',
+          }))
+        }
+        aspect={4 / 3}
+        uploadFolder="transactions"
+        helpText="Attach a cropped image to accompany this summary transaction."
+      />
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="space-y-3">
           <div className="flex items-center justify-between">
@@ -313,6 +418,9 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
               </button>
             )}
           </div>
+          {defaultGenerics.length > 0 && (
+            <p className="text-xs text-blue-600">Default for you: {defaultGenerics.map((d) => d.name).join(', ')}</p>
+          )}
           <div className="min-h-[44px] rounded-md border border-dashed border-blue-200 bg-blue-50/40 p-2 flex flex-wrap gap-2">
             {selectedGenerics.length === 0 && <p className="text-xs text-gray-500">No generic subjects selected</p>}
             {selectedGenerics.map((subject) => (
@@ -334,6 +442,34 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
           <div className="border border-gray-200 rounded-md max-h-48 overflow-y-auto bg-white">
             {renderSearchResults(genericOptions, formData.genericSubjectIds || [], addGenericSubject, genericLoading)}
           </div>
+          <div className="rounded-md border border-dashed border-blue-200 bg-blue-50/40 p-3 space-y-2">
+            <p className="text-xs font-medium text-blue-800">Quick add generic subject</p>
+            <input
+              type="text"
+              value={newGenericName}
+              onChange={(e) => setNewGenericName(e.target.value)}
+              placeholder="Name"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <input
+              type="text"
+              value={newGenericDesc}
+              onChange={(e) => setNewGenericDesc(e.target.value)}
+              placeholder="Description (optional)"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-red-600">{newGenericError}</span>
+              <button
+                type="button"
+                onClick={createGenericSubject}
+                disabled={newGenericSaving}
+                className="text-xs inline-flex items-center px-3 py-1 rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60"
+              >
+                {newGenericSaving ? 'Saving...' : 'Add'}
+              </button>
+            </div>
+          </div>
         </div>
 
         <div className="space-y-3">
@@ -353,6 +489,9 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
               </button>
             )}
           </div>
+          {defaultSpecifics.length > 0 && (
+            <p className="text-xs text-green-600">Default for you: {defaultSpecifics.map((d) => d.name).join(', ')}</p>
+          )}
           <div className="min-h-[44px] rounded-md border border-dashed border-green-200 bg-green-50/40 p-2 flex flex-wrap gap-2">
             {selectedSpecifics.length === 0 && <p className="text-xs text-gray-500">No specific tags selected</p>}
             {selectedSpecifics.map((tag) => (
@@ -374,6 +513,34 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
           <div className="border border-gray-200 rounded-md max-h-48 overflow-y-auto bg-white">
             {renderSearchResults(tagOptions, formData.specificSubjectIds || [], addSpecificTag, tagLoading)}
           </div>
+          <div className="rounded-md border border-dashed border-green-200 bg-green-50/50 p-3 space-y-2">
+            <p className="text-xs font-medium text-green-800">Quick add specific tag</p>
+            <input
+              type="text"
+              value={newTagName}
+              onChange={(e) => setNewTagName(e.target.value)}
+              placeholder="Name"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+            />
+            <input
+              type="text"
+              value={newTagCategory}
+              onChange={(e) => setNewTagCategory(e.target.value)}
+              placeholder="Category (optional)"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+            />
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-red-600">{newTagError}</span>
+              <button
+                type="button"
+                onClick={createSpecificTag}
+                disabled={newTagSaving}
+                className="text-xs inline-flex items-center px-3 py-1 rounded-md bg-green-600 text-white hover:bg-green-700 disabled:opacity-60"
+              >
+                {newTagSaving ? 'Saving...' : 'Add'}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -386,14 +553,25 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
           value={formData.informationRating}
           onChange={handleInputChange}
           options={[
-            { value: 'High', label: 'High' },
-            { value: 'Medium', label: 'Medium' },
-            { value: 'Low', label: 'Low' },
+            { value: '', label: 'None' },
+            { value: 'A', label: 'A' },
+            { value: 'A+', label: 'A+' },
+            { value: 'I', label: 'I' },
+            { value: 'I+', label: 'I+' },
           ]}
           placeholder="Select rating"
         />
-        <FormInput label="Remark" name="remark" value={formData.remark} onChange={handleInputChange} placeholder="Short remark" />
       </div>
+
+      <FormInput
+        label="Remarks / Comments"
+        name="remark"
+        type="textarea"
+        rows={4}
+        value={formData.remark}
+        onChange={handleInputChange}
+        placeholder="Add any remarks or comments..."
+      />
 
       <div className="space-y-4">
         <label className="block text-sm font-medium text-gray-700">Relevant Paragraph / Excerpts</label>
@@ -427,6 +605,16 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
         ))}
       </div>
 
+      <FormInput
+        label="Footnote"
+        name="footNote"
+        type="textarea"
+        rows={3}
+        value={formData.footNote || ''}
+        onChange={handleInputChange}
+        placeholder="Add footnote or references..."
+      />
+
       <FormInput label="Summary" name="summary" type="textarea" rows={3} value={formData.summary} onChange={handleInputChange} placeholder="Add a concise summary" />
       <FormInput label="Conclusion" name="conclusion" type="textarea" rows={3} value={formData.conclusion} onChange={handleInputChange} placeholder="Add your conclusion" />
 
@@ -452,6 +640,26 @@ export const TransactionDetailView: React.FC<{ transaction: SummaryTransaction }
 
   return (
     <div className="space-y-6">
+      {transaction.imageUrl && (
+        <div className="space-y-2">
+          <div className="overflow-hidden rounded-lg border border-gray-200 bg-black/5">
+            <img
+              src={transaction.imageUrl}
+              alt={transaction.title || 'Transaction image'}
+              className="w-full max-h-[480px] object-contain"
+            />
+          </div>
+          <a
+            href={transaction.imageUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="text-xs text-blue-600 hover:text-blue-700 inline-flex items-center gap-1"
+          >
+            View full image
+          </a>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <DetailItem label="Serial Number" value={`#${transaction.srNo}`} />
         <DetailItem label="Book" value={`${transaction.book?.bookName || 'Unknown'} (${transaction.book?.libraryNumber || '—'})`} />

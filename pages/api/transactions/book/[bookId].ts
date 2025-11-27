@@ -1,6 +1,7 @@
 // pages/api/transactions/book/[bookId].ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import prisma from "@/lib/prisma";
+import { getUserIdFromRequest } from "@/lib/auth";
 
 const toStr = (v: unknown, fallback = ""): string =>
   typeof v === "string" ? v : Array.isArray(v) ? (v[0] ?? fallback) : fallback;
@@ -32,6 +33,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(405).end(`Method ${req.method} Not Allowed`);
   }
 
+  const userId = getUserIdFromRequest(req);
+  if (!userId) return res.status(401).json({ error: "Authentication required" });
+
   try {
     const page = toInt(req.query.page, 1, 1);
     const limit = toInt(req.query.limit, 50, 1, 500);
@@ -40,20 +44,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     if (!bookId) return res.status(400).json({ error: "bookId is required" });
 
-    const book = await prisma.bookMaster.findUnique({
-      where: { id: bookId },
+    const book = await prisma.bookMaster.findFirst({
+      where: { id: bookId, userId },
       select: {
         id: true,
         bookName: true,
         libraryNumber: true,
         bookSummary: true,
         pageNumbers: true,
+        coverImageUrl: true,
+        coverImagePublicId: true,
       },
     });
     if (!book) return res.status(404).json({ error: "Book not found" });
 
     const where = {
       bookId,
+      userId,
       ...(q
         ? {
             OR: [

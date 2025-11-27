@@ -1,6 +1,7 @@
 // pages/api/transactions/[id].ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import prisma from "@/lib/prisma";
+import { getUserIdFromRequest } from "@/lib/auth";
 
 const toStr = (v: unknown, fallback = ""): string =>
   typeof v === "string" ? v : Array.isArray(v) ? (v[0] ?? fallback) : fallback;
@@ -41,13 +42,16 @@ const mapTransaction = (transaction: any) => ({
 });
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  const userId = getUserIdFromRequest(req);
+  if (!userId) return res.status(401).json({ error: "Authentication required" });
+
   const id = toStr(req.query.id);
   if (!id) return res.status(400).json({ error: "Transaction ID is required" });
 
   if (req.method === "GET") {
     try {
-      const tx = await prisma.summaryTransaction.findUnique({
-        where: { id },
+      const tx = await prisma.summaryTransaction.findFirst({
+        where: { id, userId },
         include: transactionInclude,
       });
       if (!tx) return res.status(404).json({ error: "Transaction not found" });
@@ -58,7 +62,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
   } else if (req.method === "PUT") {
     try {
-      const exists = await prisma.summaryTransaction.findUnique({ where: { id } });
+      const exists = await prisma.summaryTransaction.findFirst({ 
+        where: { id, userId } 
+      });
       if (!exists) return res.status(404).json({ error: "Transaction not found" });
 
       const {
@@ -74,6 +80,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         remark,
         summary,
         conclusion,
+        footNote,
+        imageUrl,
+        imagePublicId,
       } = req.body ?? {};
 
       // if srNo is changing, ensure uniqueness within the same book
@@ -81,6 +90,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         const dup = await prisma.summaryTransaction.findFirst({
           where: {
             bookId: exists.bookId,
+            userId,
             srNo: Number(srNo),
             id: { not: id },
           },
@@ -108,6 +118,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           remark: remark ?? undefined,
           summary: summary ?? undefined,
           conclusion: conclusion ?? undefined,
+          ...(footNote !== undefined ? { footNote: footNote ?? null } : {}),
+          ...(imageUrl !== undefined ? { imageUrl: imageUrl ?? null } : {}),
+          ...(imagePublicId !== undefined ? { imagePublicId: imagePublicId ?? null } : {}),
           ...(genericIds !== undefined
             ? {
                 genericSubjects: {
@@ -147,7 +160,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
   } else if (req.method === "DELETE") {
     try {
-      const exists = await prisma.summaryTransaction.findUnique({ where: { id } });
+      const exists = await prisma.summaryTransaction.findFirst({ 
+        where: { id, userId } 
+      });
       if (!exists) return res.status(404).json({ error: "Transaction not found" });
 
       await prisma.$transaction([

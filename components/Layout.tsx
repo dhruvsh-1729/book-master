@@ -1,6 +1,6 @@
 // components/Layout.tsx
 // Updated components/Layout.tsx - Add user info and logout
-import React, { useState, ReactNode, useEffect } from 'react';
+import React, { useState, ReactNode, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useAuth } from '../hooks/useAuth';
@@ -19,7 +19,12 @@ import {
   Download
 } from 'lucide-react';
 import { Modal, FormInput, Alert, LoadingSpinner } from './CoreComponents';
-import { BookMaster, GenericSubjectMaster, TagMaster } from '../types';
+import {
+  BookMaster,
+  GenericSubjectMaster,
+  TagMaster,
+  ImportJobSummary,
+} from '../types';
 
 
 interface LayoutProps {
@@ -32,17 +37,70 @@ interface NavigationItem {
   icon: React.ComponentType<{ className?: string }>;
 }
 
+type ImportStatus = 'idle' | 'uploading' | 'processing' | 'completed' | 'failed';
+
+interface SelectedUpload {
+  id: string;
+  file: File;
+  name: string;
+  size: number;
+  type: string;
+}
+
+interface ImportLogEntry {
+  id: string;
+  timestamp: string;
+  message: string;
+}
+
+const createLocalId = () =>
+  typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+const formatBytes = (bytes: number) => {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const idx = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / Math.pow(1024, idx)).toFixed(idx === 0 ? 0 : 1)} ${units[idx]}`;
+};
+
+const inferMimeTypeFromName = (name: string) => {
+  const lower = name.toLowerCase();
+  if (lower.endsWith('.xlsx')) return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  if (lower.endsWith('.xls')) return 'application/vnd.ms-excel';
+  if (lower.endsWith('.tsv')) return 'text/tab-separated-values';
+  if (lower.endsWith('.csv')) return 'text/csv';
+  return 'application/octet-stream';
+};
+
+const arrayBufferToBase64 = (buffer: ArrayBuffer) => {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return typeof btoa === 'function' ? btoa(binary) : Buffer.from(binary, 'binary').toString('base64');
+};
+
 // Main Layout Component
 const Layout: React.FC<LayoutProps> = ({ children }) => {
+  const { user } = useAuth();
+  const importPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastSummaryRef = useRef<ImportJobSummary | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
   const [importState, setImportState] = useState({
-    fileName: '',
-    csvText: '',
-    loading: false,
+    files: [] as SelectedUpload[],
+    jobId: '',
+    uploading: false,
+    status: 'idle' as ImportStatus,
     error: '',
-    stats: null as null | { created: number; skipped: number },
+    summary: null as ImportJobSummary | null,
+    logs: [] as ImportLogEntry[],
   });
   const [exportFilters, setExportFilters] = useState({
     bookId: '',
@@ -69,6 +127,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     { name: 'Book Master', href: '/books', icon: Book },
     { name: 'Subject Management', href: '/subjects', icon: Tag },
     { name: 'All Transactions', href: '/transactions', icon: FileText },
+    ...(user?.role === 'admin' ? [{ name: 'Admin', href: '/admin', icon: Settings }] : []),
   ];
 
   const isActive = (href: string): boolean => {
@@ -105,59 +164,207 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     loadOptions();
   }, [showExportModal, optionsLoaded, optionsLoading]);
 
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const content = e.target?.result ?? '';
-      setImportState((prev) => ({
-        ...prev,
-        csvText: typeof content === 'string' ? content : '',
-        fileName: file.name,
-        error: '',
-        stats: null,
-      }));
-    };
-    reader.readAsText(file);
+  const cleanupImportPolling = () => {
+    if (importPollRef.current) {
+      clearInterval(importPollRef.current);
+      importPollRef.current = null;
+    }
   };
 
+  useEffect(() => () => cleanupImportPolling(), []);
+
+  const appendImportLog = (message: string) => {
+    setImportState((prev) => {
+      const nextLogs = [...prev.logs, { id: createLocalId(), timestamp: new Date().toISOString(), message }];
+      return { ...prev, logs: nextLogs.slice(-200) };
+    });
+  };
+  const logSummaryDiff = (prev: ImportJobSummary | null, next: ImportJobSummary) => {
+    if (!prev || prev.status !== next.status) {
+      appendImportLog(`Status → ${next.status.toUpperCase()}`);
+    }
+
+    next.files.forEach((file) => {
+      const prevFile = prev?.files.find((f) => f.fileName === file.fileName);
+      if (!prevFile || prevFile.status !== file.status) {
+        appendImportLog(`File ${file.fileName}: ${file.status}`);
+      }
+
+      file.sheets.forEach((sheet) => {
+        const prevSheet = prevFile?.sheets.find((s) => s.name === sheet.name);
+        const countsChanged =
+          !prevSheet || prevSheet.created !== sheet.created || prevSheet.skipped !== sheet.skipped;
+        const errorChanged = sheet.error && sheet.error !== prevSheet?.error;
+        if (countsChanged || errorChanged) {
+          appendImportLog(
+            `Sheet ${sheet.name}: created ${sheet.created}, skipped ${sheet.skipped}${
+              sheet.error ? `, error: ${sheet.error}` : ''
+            }`
+          );
+        }
+      });
+    });
+  };
+
+  const handleSummaryUpdate = (summary: ImportJobSummary) => {
+    logSummaryDiff(lastSummaryRef.current, summary);
+    lastSummaryRef.current = summary;
+    setImportState((prev) => ({
+      ...prev,
+      summary,
+      status:
+        summary.status === 'completed'
+          ? 'completed'
+          : summary.status === 'failed'
+          ? 'failed'
+          : 'processing',
+    }));
+
+    if (summary.status === 'completed' || summary.status === 'failed') {
+      cleanupImportPolling();
+      if (summary.status === 'failed') {
+        setImportState((prev) => ({
+          ...prev,
+          error: prev.error || 'Import failed. Review the logs for details.',
+        }));
+      }
+    }
+  };
+
+  const startImportStatusPolling = (jobId: string) => {
+    cleanupImportPolling();
+
+    const fetchSummary = async () => {
+      try {
+        const response = await fetch(`/api/book-import/jobs/${jobId}`);
+        const payload = await response.json().catch(() => null);
+
+        if (!response.ok || !payload) {
+          throw new Error(payload?.error || 'Failed to fetch import status');
+        }
+
+        handleSummaryUpdate(payload as ImportJobSummary);
+      } catch (error: any) {
+        appendImportLog(`Status polling error: ${error?.message || error}`);
+        cleanupImportPolling();
+        setImportState((prev) => ({
+          ...prev,
+          status: prev.status === 'completed' ? prev.status : 'failed',
+          error: prev.error || 'Import status polling failed.',
+        }));
+      }
+    };
+
+    fetchSummary();
+    importPollRef.current = setInterval(fetchSummary, 2000);
+  };
+
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files ? Array.from(event.target.files) : [];
+    if (!files.length) return;
+    setImportState((prev) => ({
+      ...prev,
+      files: files.map((file) => ({
+        id: createLocalId(),
+        file,
+        name: file.name,
+        size: file.size,
+        type: file.type || inferMimeTypeFromName(file.name),
+      })),
+      error: '',
+      logs: [],
+      summary: null,
+      status: 'idle',
+    }));
+    event.target.value = '';
+  };
+
+  const removeImportFile = (id: string) => {
+    setImportState((prev) => ({
+      ...prev,
+      files: prev.files.filter((file) => file.id !== id),
+    }));
+  };
+
+  const fileToBase64 = (file: File) =>
+    new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result;
+        if (result instanceof ArrayBuffer) {
+          resolve(arrayBufferToBase64(result));
+        } else if (typeof result === 'string') {
+          resolve(typeof btoa === 'function' ? btoa(result) : Buffer.from(result, 'utf8').toString('base64'));
+        } else {
+          reject(new Error('Unsupported file format'));
+        }
+      };
+      reader.onerror = () => reject(reader.error || new Error('Failed to read file.'));
+      reader.readAsArrayBuffer(file);
+    });
+
   const triggerImport = async () => {
-    if (!importState.csvText.trim()) {
-      setImportState((prev) => ({ ...prev, error: 'Please select a CSV file first.' }));
+    if (!importState.files.length) {
+      setImportState((prev) => ({ ...prev, error: 'Please select at least one CSV or XLSX file.' }));
       return;
     }
-    setImportState((prev) => ({ ...prev, loading: true, error: '' }));
+    setImportState((prev) => ({
+      ...prev,
+      uploading: true,
+      error: '',
+      logs: [],
+      summary: null,
+      status: 'uploading',
+    }));
+
     try {
+      const payloadFiles = await Promise.all(
+        importState.files.map(async (upload) => ({
+          name: upload.name,
+          type: upload.type,
+          data: await fileToBase64(upload.file),
+        }))
+      );
+
       const response = await fetch('/api/book-import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csvText: importState.csvText }),
+        body: JSON.stringify({ files: payloadFiles }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data?.error || 'Failed to import CSV');
+      if (!response.ok) throw new Error(data?.error || 'Failed to start import');
+
+      appendImportLog(`Job ${data.jobId} accepted. Processing will begin shortly.`);
       setImportState((prev) => ({
         ...prev,
-        loading: false,
-        stats: data?.stats || null,
-        error: '',
+        uploading: false,
+        status: 'processing',
+        jobId: data.jobId,
       }));
+      lastSummaryRef.current = null;
+      startImportStatusPolling(data.jobId);
     } catch (error: any) {
+      cleanupImportPolling();
       setImportState((prev) => ({
         ...prev,
-        loading: false,
+        uploading: false,
+        status: 'failed',
         error: error?.message || 'Import failed',
       }));
     }
   };
 
   const resetImportModal = () => {
+    cleanupImportPolling();
+    lastSummaryRef.current = null;
     setImportState({
-      fileName: '',
-      csvText: '',
-      loading: false,
+      files: [],
+      jobId: '',
+      uploading: false,
+      status: 'idle',
       error: '',
-      stats: null,
+      summary: null,
+      logs: [],
     });
     setShowImportModal(false);
   };
@@ -260,44 +467,166 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             </div>
             <div className="px-6 py-4 space-y-4">
               {importState.error && <Alert type="error" message={importState.error} onClose={() => setImportState((prev) => ({ ...prev, error: '' }))} />}
-              {importState.stats && (
+
+              {importState.summary && (
                 <Alert
-                  type="success"
-                  message={`Import complete. Created ${importState.stats.created} transaction(s), skipped ${importState.stats.skipped}.`}
-                  onClose={() => setImportState((prev) => ({ ...prev, stats: null }))}
+                  type={importState.summary.status === 'completed' ? 'success' : 'warning'}
+                  message={`Job ${importState.summary.jobId} ${importState.summary.status}. Created ${importState.summary.totalCreated} record(s), skipped ${importState.summary.totalSkipped}.`}
+                  onClose={() => setImportState((prev) => ({ ...prev, summary: null }))}
                 />
               )}
 
               <div className="space-y-2">
-                <label className="block text-sm font-medium text-gray-700">Upload CSV</label>
+                <label className="block text-sm font-medium text-gray-700">Upload CSV or XLSX</label>
                 <input
                   type="file"
-                  accept=".csv,text/csv"
+                  multiple
+                  accept=".csv,.tsv,.xls,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                   onChange={handleFileChange}
-                  className="w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-600 hover:file:bg-blue-100"
+                  disabled={importState.status === 'processing' || importState.uploading}
+                  className="w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-600 hover:file:bg-blue-100 disabled:opacity-50"
                 />
-                {importState.fileName && <p className="text-xs text-gray-500">Selected: {importState.fileName}</p>}
+                {importState.files.length > 0 && (
+                  <div className="mt-2 border border-gray-200 rounded-md divide-y bg-gray-50">
+                    {importState.files.map((file) => (
+                      <div key={file.id} className="flex items-center justify-between py-2 px-3 text-sm">
+                        <div>
+                          <p className="font-medium text-gray-800">{file.name}</p>
+                          <p className="text-xs text-gray-500">{formatBytes(file.size)} · {file.type || 'Unknown type'}</p>
+                        </div>
+                        <button
+                          type="button"
+                          className="text-xs text-red-600 hover:underline"
+                          onClick={() => removeImportFile(file.id)}
+                          disabled={importState.status === 'processing' || importState.uploading}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <p className="text-sm text-gray-600">
-                The first data row should contain book details. Subsequent rows will create summary transactions. Blank cells in the Title, Generic Subject, or Specific Tag
-                columns automatically reuse the last non-empty value above them.
+                Each file may contain one or many sheets. The first row should describe the book, and all subsequent rows are treated as summary transactions. Blank values in Title,
+                Generic Subject, or Specific Tag columns will automatically reuse the last non-empty value above them.
               </p>
+
+              <div className="border border-gray-200 rounded-md bg-gray-50 p-4 space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="font-medium text-gray-800">Live status</p>
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-xs font-semibold ${
+                      importState.status === 'completed'
+                        ? 'bg-green-100 text-green-800'
+                        : importState.status === 'failed'
+                        ? 'bg-red-100 text-red-800'
+                        : importState.status === 'processing'
+                        ? 'bg-indigo-100 text-indigo-800'
+                        : importState.status === 'uploading'
+                        ? 'bg-blue-100 text-blue-800'
+                        : 'bg-gray-100 text-gray-800'
+                    }`}
+                  >
+                    {importState.status.toUpperCase()}
+                  </span>
+                </div>
+                <div className="mt-2 max-h-48 overflow-y-auto text-xs font-mono space-y-1 bg-white border border-gray-200 rounded-md px-3 py-2">
+                  {importState.logs.length === 0 && <p className="text-gray-500">Events will appear here once the import starts.</p>}
+                  {importState.logs.map((log) => (
+                    <div key={log.id} className="flex space-x-3">
+                      <span className="text-gray-500">{new Date(log.timestamp).toLocaleTimeString()}</span>
+                      <span className="text-gray-800">{log.message}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {importState.summary && (
+                <div className="space-y-3">
+                  {importState.summary.files.map((file) => (
+                    <div key={file.fileName} className="border border-gray-200 rounded-lg p-4 bg-white space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="font-semibold text-gray-900">{file.fileName}</p>
+                          <p className="text-xs text-gray-500">Sheets: {file.sheets.length} · Type: {file.fileType}</p>
+                        </div>
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-xs font-semibold ${
+                            file.status === 'completed'
+                              ? 'bg-green-100 text-green-800'
+                              : file.status === 'failed'
+                              ? 'bg-red-100 text-red-800'
+                              : file.status === 'processing'
+                              ? 'bg-indigo-100 text-indigo-800'
+                              : 'bg-gray-100 text-gray-800'
+                          }`}
+                        >
+                          {file.status.toUpperCase()}
+                        </span>
+                      </div>
+                      {file.error && <p className="text-sm text-red-600">File error: {file.error}</p>}
+                      {file.sheets.map((sheet) => (
+                        <div key={sheet.name} className="border border-gray-100 rounded-md p-3 bg-gray-50 space-y-2">
+                          <div className="flex items-center justify-between text-sm">
+                            <p className="font-medium text-gray-800">Sheet: {sheet.name}</p>
+                            <p className="text-gray-600">
+                              Created {sheet.created} · Skipped {sheet.skipped}
+                            </p>
+                          </div>
+                          {sheet.error && <p className="text-xs text-red-600">Sheet error: {sheet.error}</p>}
+                          {sheet.errors.length > 0 && (
+                            <div className="overflow-x-auto">
+                              <table className="min-w-full text-xs text-left">
+                                <thead className="text-gray-500">
+                                  <tr>
+                                    <th className="px-2 py-1">Row</th>
+                                    <th className="px-2 py-1">Message</th>
+                                    <th className="px-2 py-1">Fields</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {sheet.errors.map((error, idx) => (
+                                    <tr key={`${sheet.name}-${idx}`} className="border-t border-gray-200">
+                                      <td className="px-2 py-1 text-gray-700">{error.rowIndex}</td>
+                                      <td className="px-2 py-1 text-gray-800">{error.message}</td>
+                                      <td className="px-2 py-1 text-gray-600">{error.fields?.join(', ') || '—'}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-end space-x-3">
               <button
                 onClick={resetImportModal}
-                className="px-4 py-2 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50"
-                disabled={importState.loading}
+                className="px-4 py-2 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+                disabled={importState.uploading || importState.status === 'processing'}
               >
                 Close
               </button>
               <button
                 onClick={triggerImport}
-                disabled={!importState.csvText || importState.loading}
+                disabled={
+                  importState.files.length === 0 ||
+                  importState.status === 'processing' ||
+                  importState.uploading
+                }
                 className="px-4 py-2 rounded-md text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-60"
               >
-                {importState.loading ? 'Importing...' : 'Start Import'}
+                {importState.status === 'processing'
+                  ? 'Processing...'
+                  : importState.uploading
+                  ? 'Uploading...'
+                  : 'Start Import'}
               </button>
             </div>
           </div>

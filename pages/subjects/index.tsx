@@ -1,6 +1,6 @@
 // pages/subjects/index.tsx - Subjects Management Page
-import React, { useState, useEffect } from 'react';
-import { Tag, Plus } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Tag, Plus, Upload, Download } from 'lucide-react';
 import { DataTable, FormInput, Alert, Card, Breadcrumb } from '../../components/CoreComponents';
 import { 
   GenericSubjectMaster, 
@@ -18,6 +18,9 @@ const SubjectsPage: React.FC = () => {
   const [showModal, setShowModal] = useState<boolean>(false);
   const [editingItem, setEditingItem] = useState<GenericSubjectMaster | TagMaster | null>(null);
   const [alert, setAlert] = useState<AlertProps | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const fetchGenericSubjects = async () => {
     try {
@@ -144,6 +147,60 @@ const SubjectsPage: React.FC = () => {
     }
   };
 
+  const handleImportClick = () => fileInputRef.current?.click();
+
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImporting(true);
+    try {
+      const text = await file.text();
+      const res = await fetch('/api/subjects/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ csvText: text, type: activeTab === 'generic' ? 'generic' : 'specific' }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Import failed');
+      setAlert({ type: 'success', message: `Imported successfully (created: ${data.created ?? 0}, updated: ${data.updated ?? 0})` });
+      if (activeTab === 'generic') {
+        fetchGenericSubjects();
+      } else {
+        fetchSpecificTags();
+      }
+    } catch (error: any) {
+      setAlert({ type: 'error', message: error?.message || 'Import failed' });
+    } finally {
+      setImporting(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const type = activeTab === 'generic' ? 'generic' : 'specific';
+      const res = await fetch(`/api/subjects/export?type=${type}`);
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.error || 'Export failed');
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${type}-subjects.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (error: any) {
+      setAlert({ type: 'error', message: error?.message || 'Export failed' });
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <Breadcrumb 
@@ -165,15 +222,48 @@ const SubjectsPage: React.FC = () => {
         title="Subject Management"
         icon={Tag}
         headerActions={
-          <button
-            onClick={handleCreate}
-            className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700"
-          >
-            <Plus className="h-4 w-4 mr-2" />
-            Add {activeTab === 'generic' ? 'Generic Subject' : 'Specific Tag'}
-          </button>
+          <div className="flex flex-wrap gap-3">
+            <button
+              onClick={handleImportClick}
+              className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+              disabled={importing}
+            >
+              <Upload className="h-4 w-4 mr-2" />
+              {importing ? 'Importing...' : 'Import Subjects'}
+            </button>
+            <button
+              onClick={handleExport}
+              className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+              disabled={exporting}
+            >
+              <Download className="h-4 w-4 mr-2" />
+              {exporting ? 'Exporting...' : 'Export Subjects'}
+            </button>
+            <button
+              onClick={handleCreate}
+              className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700"
+            >
+              <Plus className="h-4 w-4 mr-2" />
+              Add {activeTab === 'generic' ? 'Generic Subject' : 'Specific Tag'}
+            </button>
+          </div>
         }
       >
+        <input type="file" accept=".csv,text/csv" ref={fileInputRef} onChange={handleImportFile} className="hidden" />
+        <div className="text-xs text-gray-600 mb-4 space-y-1">
+          <p className="font-semibold">CSV format</p>
+          {activeTab === 'generic' ? (
+            <>
+              <p>Headers: <code className="bg-gray-100 px-1 py-0.5 rounded">name</code>, <code className="bg-gray-100 px-1 py-0.5 rounded">description</code> (optional)</p>
+              <p>Example: <code className="bg-gray-100 px-1 py-0.5 rounded">"Physics","Basic principles"</code></p>
+            </>
+          ) : (
+            <>
+              <p>Headers: <code className="bg-gray-100 px-1 py-0.5 rounded">name</code>, <code className="bg-gray-100 px-1 py-0.5 rounded">category</code> (optional), <code className="bg-gray-100 px-1 py-0.5 rounded">description</code> (optional)</p>
+              <p>Example: <code className="bg-gray-100 px-1 py-0.5 rounded">"Thermodynamics","Physics","Heat and energy"</code></p>
+            </>
+          )}
+        </div>
         {/* Tabs */}
         <div className="border-b border-gray-200 mb-6">
           <nav className="-mb-px flex space-x-8">

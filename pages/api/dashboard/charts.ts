@@ -1,6 +1,7 @@
 // pages/api/dashboard/charts.ts
 import { NextApiRequest, NextApiResponse } from 'next';
 import { PrismaClient } from '@prisma/client';
+import { getUserIdFromRequest } from '@/lib/auth';
 
 const prisma = new PrismaClient();
 
@@ -9,6 +10,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     res.setHeader('Allow', ['GET']);
     return res.status(405).json({ error: `Method ${req.method} Not Allowed` });
   }
+
+  const userId = getUserIdFromRequest(req);
+  if (!userId) return res.status(401).json({ error: 'Authentication required' });
 
   try {
     // Get data for the last 12 months
@@ -23,6 +27,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const [bookCount, transactionCount] = await Promise.all([
         prisma.bookMaster.count({
           where: {
+            userId,
             createdAt: {
               gte: startDate,
               lte: endDate
@@ -31,6 +36,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }),
         prisma.summaryTransaction.count({
           where: {
+            userId,
             createdAt: {
               gte: startDate,
               lte: endDate
@@ -49,6 +55,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // Get transaction distribution by information rating
     const ratingDistribution = await prisma.summaryTransaction.groupBy({
       by: ['informationRating'],
+      where: {
+        userId
+      },
       _count: {
         informationRating: true
       },
@@ -67,6 +76,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       },
       where: {
         AND: [
+          { userId },
           { publisherName: { not: null } },
           { publisherName: { not: '' } }
         ]
