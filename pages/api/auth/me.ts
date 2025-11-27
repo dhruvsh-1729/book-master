@@ -20,18 +20,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const decoded = jwt.verify(token, JWT_SECRET) as any;
     
     const user = await prisma.user.findUnique({
-      where: { id: decoded.userId }
+      where: { id: decoded.userId },
+      select: { id: true, email: true, name: true, role: true }
     });
 
     if (!user) {
       return res.status(401).json({ error: 'User not found' });
     }
 
+    const role = user.role || (user.email === 'dhruvshdarshansh@gmail.com' ? 'admin' : 'user');
+
+    if (role !== user.role) {
+      await prisma.user.update({ where: { id: user.id }, data: { role } });
+    }
+
     res.status(200).json({
       user: {
         id: user.id,
         email: user.email,
-        name: user.name
+        name: user.name,
+        role
       }
     });
   } catch (error: any) {

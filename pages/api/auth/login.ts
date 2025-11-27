@@ -21,7 +21,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // Find user
     const user = await prisma.user.findUnique({
-      where: { email }
+      where: { email },
+      select: { id: true, email: true, name: true, password: true, role: true }
     });
 
     if (!user) {
@@ -33,6 +34,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     
     if (!isValidPassword) {
       return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const enforcedRole = user.role || (user.email === 'dhruvshdarshansh@gmail.com' ? 'admin' : 'user');
+    if (user.role !== enforcedRole) {
+      await prisma.user.update({ where: { id: user.id }, data: { role: enforcedRole } });
     }
 
     // Generate JWT token
@@ -50,7 +56,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       user: {
         id: user.id,
         email: user.email,
-        name: user.name
+        name: user.name,
+        role: enforcedRole
       }
     });
   } catch (error: any) {

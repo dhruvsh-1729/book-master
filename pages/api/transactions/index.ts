@@ -22,7 +22,6 @@ const toIdArray = (input: unknown): string[] => {
 };
 
 const transactionInclude = {
-  book: { select: { id: true, bookName: true, libraryNumber: true } },
   user: { select: { id: true, name: true, email: true } },
   genericSubjects: {
     include: { genericSubject: true },
@@ -32,8 +31,9 @@ const transactionInclude = {
   },
 } as const;
 
-const mapTransaction = (transaction: any) => ({
+const mapTransaction = (transaction: any, booksById: Record<string, any>) => ({
   ...transaction,
+  book: booksById[transaction.bookId] || null,
   genericSubjects: (transaction.genericSubjects || [])
     .map((link: any) => link.genericSubject)
     .filter(Boolean),
@@ -71,18 +71,30 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         ];
       }
 
-      const [transactions, total] = await Promise.all([
-        prisma.summaryTransaction
-          .findMany({
-            where,
-            include: transactionInclude,
-            skip: (page - 1) * limit,
-            take: limit,
-            orderBy: [{ bookId: "asc" }, { srNo: "asc" }],
-          })
-          .then((list) => list.map(mapTransaction)),
+      const [transactionRows, total] = await Promise.all([
+        prisma.summaryTransaction.findMany({
+          where,
+          include: transactionInclude,
+          skip: (page - 1) * limit,
+          take: limit,
+          orderBy: [{ bookId: "asc" }, { srNo: "asc" }],
+        }),
         prisma.summaryTransaction.count({ where }),
       ]);
+
+      const bookIds = Array.from(new Set(transactionRows.map((row) => row.bookId).filter(Boolean)));
+      const books = bookIds.length
+        ? await prisma.bookMaster.findMany({
+            where: { id: { in: bookIds }, userId },
+            select: { id: true, bookName: true, libraryNumber: true },
+          })
+        : [];
+      const booksById = books.reduce<Record<string, any>>((acc, book) => {
+        acc[book.id] = book;
+        return acc;
+      }, {});
+
+      const transactions = transactionRows.map((row) => mapTransaction(row, booksById));
 
       return res.status(200).json({
         transactions,
@@ -108,6 +120,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         remark,
         summary,
         conclusion,
+        footNote,
+        imageUrl,
+        imagePublicId,
       } = req.body ?? {};
 
       if (!bookId || srNo === undefined) {
@@ -134,6 +149,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const genericIds = toIdArray(genericSubjectIds);
       const specificIds = toIdArray(specificSubjectIds);
 
+      const [defaultGenerics, defaultSpecifics] = await Promise.all([
+        prisma.userDefaultGenericSubject.findMany({ where: { userId }, select: { genericSubjectId: true } }),
+        prisma.userDefaultSpecificTag.findMany({ where: { userId }, select: { tagId: true } }),
+      ]);
+      const mergedGenericIds = Array.from(
+        new Set([...genericIds, ...defaultGenerics.map((g) => String(g.genericSubjectId))])
+      );
+      const mergedSpecificIds = Array.from(
+        new Set([...specificIds, ...defaultSpecifics.map((s) => String(s.tagId))])
+      );
+
       const created = await prisma.summaryTransaction.create({
         data: {
           bookId: String(bookId),
@@ -148,16 +174,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           remark: remark ?? null,
           summary: summary ?? null,
           conclusion: conclusion ?? null,
-          genericSubjects: genericIds.length
+          footNote: footNote ?? null,
+          imageUrl: imageUrl ?? null,
+          imagePublicId: imagePublicId ?? null,
+          genericSubjects: mergedGenericIds.length
             ? {
-                create: genericIds.map((id) => ({
+                create: mergedGenericIds.map((id) => ({
                   genericSubject: { connect: { id } },
                 })),
               }
             : undefined,
-          specificSubjects: specificIds.length
+          specificSubjects: mergedSpecificIds.length
             ? {
-                create: specificIds.map((id) => ({
+                create: mergedSpecificIds.map((id) => ({
                   tag: { connect: { id } },
                 })),
               }
@@ -166,7 +195,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         include: transactionInclude,
       });
 
-      return res.status(201).json(mapTransaction(created));
+      const bookDetails = await prisma.bookMaster.findUnique({
+        where: { id: String(bookId), userId },
+        select: { id: true, bookName: true, libraryNumber: true },
+      });
+
+      return res.status(201).json(mapTransaction({ ...created, bookId: String(bookId) }, bookDetails ? { [bookDetails.id]: bookDetails } : {}));
     } catch (e) {
       console.error("POST /transactions error", e);
       return res.status(500).json({ error: "Failed to create transaction" });

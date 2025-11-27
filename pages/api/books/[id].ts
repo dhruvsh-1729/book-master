@@ -73,24 +73,71 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const exists = await prisma.bookMaster.findFirst({ where: { id, userId } });
       if (!exists) return res.status(404).json({ error: "Book not found" });
 
-      const updated = await prisma.bookMaster.update({
-        where: { id },
-        data: {
-          libraryNumber: req.body?.libraryNumber ?? undefined,
-          bookName: req.body?.bookName ?? undefined,
-          bookSummary: req.body?.bookSummary ?? undefined,
-          pageNumbers: req.body?.pageNumbers ?? undefined,
-          grade: req.body?.grade ?? undefined,
-          remark: req.body?.remark ?? undefined,
-          edition: req.body?.edition ?? undefined,
-          publisherName: req.body?.publisherName ?? undefined,
-        },
+      const {
+        libraryNumber,
+        bookName,
+        bookSummary,
+        pageNumbers,
+        grade,
+        remark,
+        edition,
+        publisherName,
+        coverImageUrl,
+        coverImagePublicId,
+        editors,
+      } = req.body ?? {};
+
+      const editorsProvided = editors !== undefined;
+      const normalizedEditors = Array.isArray(editors)
+        ? (editors as any[])
+            .map((e) => ({
+              name: String(e?.name || "").trim(),
+              role: e?.role ? String(e.role) : "Editor",
+            }))
+            .filter((e) => e.name)
+            .slice(0, 25)
+        : [];
+
+      const updated = await prisma.$transaction(async (tx) => {
+        await tx.bookMaster.update({
+          where: { id },
+          data: {
+            ...(libraryNumber !== undefined ? { libraryNumber: String(libraryNumber) } : {}),
+            ...(bookName !== undefined ? { bookName: String(bookName) } : {}),
+            ...(bookSummary !== undefined ? { bookSummary: bookSummary ?? null } : {}),
+            ...(pageNumbers !== undefined ? { pageNumbers: pageNumbers ?? null } : {}),
+            ...(grade !== undefined ? { grade: grade ?? null } : {}),
+            ...(remark !== undefined ? { remark: remark ?? null } : {}),
+            ...(edition !== undefined ? { edition: edition ?? null } : {}),
+            ...(publisherName !== undefined ? { publisherName: publisherName ?? null } : {}),
+            ...(coverImageUrl !== undefined ? { coverImageUrl: coverImageUrl ?? null } : {}),
+            ...(coverImagePublicId !== undefined ? { coverImagePublicId: coverImagePublicId ?? null } : {}),
+            updatedAt: new Date(),
+          },
+        });
+
+        if (editorsProvided) {
+          await tx.bookEditor.deleteMany({ where: { bookId: id } });
+          if (normalizedEditors.length) {
+            await tx.bookEditor.createMany({
+              data: normalizedEditors.map((e) => ({
+                bookId: id,
+                name: e.name,
+                role: e.role,
+              })),
+            });
+          }
+        }
+
+        return tx.bookMaster.findUnique({
+          where: { id },
+          include: { editor: true },
+        });
       });
 
-      return res.status(200).json(updated);
+      const { editor: updatedEditors, ...rest } = (updated as any) || {};
+      return res.status(200).json({ ...rest, editors: updatedEditors ?? [] });
     } catch (e: any) {
-      if (e?.code === "P2002")
-        return res.status(400).json({ error: "Library number already exists" });
       console.error("PUT /books/[id] error", e);
       return res.status(500).json({ error: "Failed to update book" });
     }
@@ -99,16 +146,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const exists = await prisma.bookMaster.findFirst({ where: { id, userId } });
       if (!exists) return res.status(404).json({ error: "Book not found" });
 
-      // Check if bookId is present as foreign key in summaryTransactions table
-      const summaryTransaction = await prisma.summaryTransaction.findFirst({
-      where: { bookId: id },
+      const txIds = await prisma.summaryTransaction.findMany({
+        where: { bookId: id },
+        select: { id: true },
       });
+      const summaryIds = txIds.map((t) => t.id);
 
-      if (summaryTransaction) {
-      return res.status(400).json({ error: "Delete transactions before deleting the book." });
-      }
-
-      await prisma.bookMaster.delete({ where: { id } });
+      await prisma.$transaction(async (tx) => {
+        if (summaryIds.length) {
+          await tx.summaryTransactionSpecificTag.deleteMany({ where: { summaryTransactionId: { in: summaryIds } } });
+          await tx.summaryTransactionGenericSubject.deleteMany({ where: { summaryTransactionId: { in: summaryIds } } });
+          await tx.summaryTransaction.deleteMany({ where: { id: { in: summaryIds } } });
+        }
+        await tx.bookEditor.deleteMany({ where: { bookId: id } });
+        await tx.bookMaster.delete({ where: { id } });
+      });
       return res.status(204).end();
     } catch (e) {
       console.error("DELETE /books/[id] error", e);

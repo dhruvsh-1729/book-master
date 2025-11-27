@@ -1,7 +1,37 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { parse } from "csv-parse/sync";
+import XLSX from "xlsx";
 import prisma from "@/lib/prisma";
 import { getUserIdFromRequest } from "@/lib/auth";
+import { importJobManager, RowError } from "@/lib/import-jobs";
+
+type BookRecord = Awaited<ReturnType<typeof prisma.bookMaster.create>>;
+
+interface BookPayload {
+  libraryNumber: string;
+  bookName: string;
+  bookSummary: string | null;
+  pageNumbers: string | null;
+  grade: string | null;
+  remark: string | null;
+  edition: string | null;
+  publisherName: string | null;
+}
+
+interface JobImportCaches {
+  books: Map<string, Promise<BookRecord>>;
+  transactionKeys: Map<string, Set<string>>;
+}
+
+const CSV_PARSE_OPTIONS = {
+  columns: true,
+  skip_empty_lines: true,
+  bom: true,
+  relax_quotes: true,
+  relax_column_count: true,
+  relax_column_count_less: true,
+  trim: true,
+};
 
 const COLS = {
   libraryNumber: ["Sr No."],
@@ -15,7 +45,13 @@ const COLS = {
   srNo: ["srNo", "Sr No", "SR No", "S.No", "Sr", "Index", "Sr No."],
   title: ["title", "Title", "Topic"],
   keywords: ["keywords", "Keywords", "Keyword"],
-  relevantParagraph: ["relevantParagraph", "Relevant Paragraph", "Paragraph (JSON/Text)", "Relevant Para", "Excerpts"],
+  relevantParagraph: [
+    "relevantParagraph",
+    "Relevant Paragraph",
+    "Paragraph (JSON/Text)",
+    "Relevant Para",
+    "Excerpts",
+  ],
   paragraphNo: ["paragraphNo", "Paragraph No", "Para No"],
   pageNo: ["pageNo", "Page No", "Page"],
   informationRating: ["informationRating", "Information Rating", "Rating"],
@@ -52,9 +88,27 @@ const EXPORT_HEADERS = [
 ];
 
 const truthy = (v: unknown) => v !== undefined && v !== null && String(v).trim() !== "";
+
 const normalizeHeaderKey = (k: unknown) =>
   String(k ?? "")
     .replace(/^[\uFEFF]/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const normalizeText = (value: unknown) =>
+  typeof value === "string"
+    ? value
+        .normalize("NFKC")
+        .toLowerCase()
+        .replace(/\s+/g, " ")
+        .trim()
+    : "";
+
+// Extra normalization for matching (case-insensitive, ignores punctuation & extra spaces)
+const normalizeForMatch = (k: unknown) =>
+  normalizeHeaderKey(k)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -68,11 +122,50 @@ const normalizeRowKeys = (row: Record<string, any>) => {
 
 const asAliasList = (aliases?: readonly string[]) => (aliases ? [...aliases] : []);
 
-const pickCol = (row: Record<string, any>, aliases?: readonly string[]) => {
+/**
+ * Smart column picker:
+ * - Normalizes both header names & aliases
+ * - Ignores case, punctuation, extra spaces
+ * - Tries exact match, then prefix, then substring
+ *   e.g. "Sr.No." ↔ "Sr No", "Title / Heading" ↔ "Title",
+ *        "Relevant Paragraph / Excerpts" ↔ "Relevant Paragraph"
+ */
+const pickCol = (row: Record<string, unknown>, aliases?: readonly string[]) => {
   const list = asAliasList(aliases);
-  for (const key of list) {
-    if (key in row && truthy(row[key])) return String(row[key]).trim();
+  if (!list.length) return undefined;
+
+  const entries = Object.entries(row).map(([key, value]) => ({
+    key,
+    value,
+    normKey: normalizeForMatch(key),
+  }));
+
+  for (const alias of list) {
+    const normAlias = normalizeForMatch(alias);
+    if (!normAlias) continue;
+
+    // 1) exact normalized match
+    let candidate = entries.find((e) => e.normKey === normAlias);
+
+    // 2) prefix match (either way)
+    if (!candidate) {
+      candidate = entries.find(
+        (e) => e.normKey.startsWith(normAlias) || normAlias.startsWith(e.normKey)
+      );
+    }
+
+    // 3) substring match (either way)
+    if (!candidate) {
+      candidate = entries.find(
+        (e) => e.normKey.includes(normAlias) || normAlias.includes(e.normKey)
+      );
+    }
+
+    if (candidate && truthy(candidate.value)) {
+      return String(candidate.value).trim();
+    }
   }
+
   return undefined;
 };
 
@@ -102,7 +195,8 @@ const escapeCsv = (value: unknown) => {
   return str;
 };
 
-const toStr = (v: unknown) => (typeof v === "string" ? v : Array.isArray(v) ? v[0] ?? "" : "");
+const toStr = (v: unknown) =>
+  typeof v === "string" ? v : Array.isArray(v) ? (v[0] ?? "") : "";
 
 const splitMultiValues = (raw?: string) => {
   if (!truthy(raw)) return [];
@@ -113,12 +207,15 @@ const splitMultiValues = (raw?: string) => {
 };
 
 const joinMultiValues = (values: (string | null | undefined)[]) =>
-  values.filter(Boolean).map((v) => String(v)).join("; ");
+  values
+    .filter(Boolean)
+    .map((v) => String(v))
+    .join("; ");
 
 export const config = {
   api: {
     bodyParser: {
-      sizeLimit: "10mb",
+      sizeLimit: "25mb",
     },
   },
 };
@@ -128,7 +225,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!userId) return res.status(401).json({ error: "Authentication required" });
 
   if (req.method === "POST") {
-    return handleImport(req, res, userId);
+    return startImportJob(req, res, userId);
   }
 
   if (req.method === "GET") {
@@ -139,66 +236,348 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   return res.status(405).end(`Method ${req.method} Not Allowed`);
 }
 
-async function handleImport(req: NextApiRequest, res: NextApiResponse, userId: string) {
-  const csvText = typeof req.body?.csvText === "string" ? req.body.csvText : undefined;
-  if (!csvText) return res.status(400).json({ error: "csvText is required" });
+interface IncomingFilePayload {
+  name?: string;
+  type?: string;
+  data?: string; // base64
+  csvText?: string;
+}
 
-  let records = parse(csvText, {
-    columns: true,
-    skip_empty_lines: true,
-    bom: true,
-    relax_quotes: true,
-    relax_column_count: true,
-    trim: true,
-  }) as Record<string, any>[];
+interface PreparedFile {
+  fileName: string;
+  fileType: string;
+  buffer?: Buffer;
+  csvText?: string;
+}
 
-  if (!records.length) return res.status(400).json({ error: "CSV has no data rows" });
+async function startImportJob(req: NextApiRequest, res: NextApiResponse, userId: string) {
+  const body = req.body ?? {};
+  const filesPayload: IncomingFilePayload[] = Array.isArray(body.files)
+    ? body.files
+    : body.csvText
+    ? [{ name: body.fileName || "upload.csv", type: "text/csv", csvText: body.csvText }]
+    : [];
 
-  records = records.map(normalizeRowKeys);
+  if (!filesPayload.length) {
+    return res.status(400).json({ error: "No files provided. Upload a CSV or XLSX file." });
+  }
+
+  let preparedFiles: PreparedFile[] = [];
+  try {
+    preparedFiles = filesPayload.map((file) => normalizeIncomingFile(file));
+  } catch (error: any) {
+    return res.status(400).json({ error: error?.message || "Invalid file payload" });
+  }
+
+  const job = importJobManager.createJob(
+    userId,
+    preparedFiles.map((file) => ({ fileName: file.fileName, fileType: file.fileType }))
+  );
+
+  setImmediate(() => processImportJob(job.id, userId, preparedFiles, body.bookName));
+
+  return res.status(202).json({ jobId: job.id });
+}
+
+function normalizeIncomingFile(file: IncomingFilePayload): PreparedFile {
+  const fileName = file.name || "upload.csv";
+  const inferredType = inferMimeType(fileName);
+  const fileType = file.type || inferredType;
+
+  if (file.csvText && truthy(file.csvText)) {
+    return {
+      fileName,
+      fileType: fileType || "text/csv",
+      csvText: String(file.csvText),
+    };
+  }
+
+  if (!file.data) {
+    throw new Error(`Missing file data for ${fileName}`);
+  }
+
+  return {
+    fileName,
+    fileType: fileType || "application/octet-stream",
+    buffer: Buffer.from(file.data, "base64"),
+  };
+}
+
+function inferMimeType(fileName: string) {
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith(".xlsx")) return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  if (lower.endsWith(".xls")) return "application/vnd.ms-excel";
+  if (lower.endsWith(".csv") || lower.endsWith(".tsv")) return "text/csv";
+  return "application/octet-stream";
+}
+
+const isExcelFile = (file: PreparedFile) =>
+  file.fileType.includes("sheet") || file.fileName.toLowerCase().endsWith(".xlsx") || file.fileName.toLowerCase().endsWith(".xls");
+
+async function processImportJob(
+  jobId: string,
+  userId: string,
+  files: PreparedFile[],
+  explicitBookName?: string
+) {
+  const job = importJobManager.getJob(jobId);
+  if (!job) return;
+
+  const jobCaches: JobImportCaches = {
+    books: new Map(),
+    transactionKeys: new Map(),
+  };
+
+  // keep a global seen set to avoid duplicates across all files in same job
+  const globalSeenKeys = new Set<string>();
+
+  importJobManager.updateSummary(job, (draft) => {
+    draft.status = "processing";
+  });
+  importJobManager.emit(job, { type: "job-started", payload: { jobId } });
+
+  try {
+    for (const file of files) {
+      await processSingleFile(job, userId, file, jobCaches, globalSeenKeys, explicitBookName);
+    }
+  } catch (error: any) {
+    importJobManager.completeJob(job, "failed", error?.message || "Import failed");
+    return;
+  }
+
+  const hasFailures = job.summary.files.some((file) => file.status === "failed");
+  importJobManager.completeJob(job, hasFailures ? "failed" : "completed");
+}
+
+async function processSingleFile(
+  job: NonNullable<ReturnType<typeof importJobManager.getJob>>,
+  userId: string,
+  file: PreparedFile,
+  caches: JobImportCaches,
+  globalSeenKeys: Set<string>,
+  explicitBookName?: string
+) {
+  if (!job) return;
+
+  importJobManager.updateSummary(job, (draft) => {
+    const target = draft.files.find((f) => f.fileName === file.fileName);
+    if (target) {
+      target.status = "processing";
+      target.error = undefined;
+    }
+  });
+
+  importJobManager.emit(job, {
+    type: "file-start",
+    payload: { jobId: job.id, fileName: file.fileName, fileType: file.fileType },
+  });
+
+  try {
+    if (isExcelFile(file)) {
+      await processExcelFile(job, userId, file, caches, globalSeenKeys, explicitBookName);
+    } else {
+      await processCsvFile(job, userId, file, caches, globalSeenKeys, explicitBookName);
+    }
+
+    importJobManager.updateSummary(job, (draft) => {
+      const target = draft.files.find((f) => f.fileName === file.fileName);
+      if (target) target.status = "completed";
+    });
+    importJobManager.emit(job, {
+      type: "file-complete",
+      payload: { jobId: job.id, fileName: file.fileName },
+    });
+  } catch (error: any) {
+    importJobManager.updateSummary(job, (draft) => {
+      const target = draft.files.find((f) => f.fileName === file.fileName);
+      if (target) {
+        target.status = "failed";
+        target.error = error?.message || "Unknown error";
+      }
+    });
+    importJobManager.emit(job, {
+      type: "file-error",
+      payload: { jobId: job.id, fileName: file.fileName, message: error?.message },
+    });
+    throw error;
+  }
+}
+
+async function processCsvFile(
+  job: NonNullable<ReturnType<typeof importJobManager.getJob>>,
+  userId: string,
+  file: PreparedFile,
+  caches: JobImportCaches,
+  globalSeenKeys: Set<string>,
+  explicitBookName?: string
+) {
+  const csvText = file.csvText ?? file.buffer?.toString("utf8") ?? "";
+  if (!csvText.trim()) {
+    throw new Error("CSV file is empty");
+  }
+
+  const records = parseCsvOrThrow(csvText, file.fileName);
+  if (!records.length) {
+    throw new Error("No rows detected in CSV file");
+  }
+
+  await importFromRecords(job, userId, caches, {
+    fileName: file.fileName,
+    sheetName: undefined,
+    records,
+    globalSeenKeys,
+    explicitBookName,
+  });
+}
+
+async function processExcelFile(
+  job: NonNullable<ReturnType<typeof importJobManager.getJob>>,
+  userId: string,
+  file: PreparedFile,
+  caches: JobImportCaches,
+  globalSeenKeys: Set<string>,
+  explicitBookName?: string
+) {
+  if (!file.buffer) {
+    throw new Error("Missing binary data for Excel file");
+  }
+
+  const workbook = XLSX.read(file.buffer, { type: "buffer" });
+  const sheetNames = workbook.SheetNames;
+  if (!sheetNames.length) {
+    throw new Error("No sheets found in the workbook");
+  }
+
+  for (const sheetName of sheetNames) {
+    importJobManager.emit(job, {
+      type: "sheet-start",
+      payload: { jobId: job.id, fileName: file.fileName, sheetName },
+    });
+
+    const sheet = workbook.Sheets[sheetName];
+    const csvText = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
+    if (!csvText.trim()) {
+      addSheetSummary(job, file.fileName, sheetName, { error: "Sheet is empty" });
+      importJobManager.emit(job, {
+        type: "sheet-complete",
+        payload: { jobId: job.id, fileName: file.fileName, sheetName, skipped: 0, created: 0 },
+      });
+      continue;
+    }
+
+    try {
+      const records = parseCsvOrThrow(csvText, `${file.fileName}::${sheetName}`);
+      if (!records.length) {
+        addSheetSummary(job, file.fileName, sheetName, { error: "No rows found in sheet" });
+        continue;
+      }
+
+      await importFromRecords(job, userId, caches, {
+        fileName: file.fileName,
+        sheetName,
+        records,
+        globalSeenKeys,
+        explicitBookName,
+      });
+    } catch (error: any) {
+      addSheetSummary(job, file.fileName, sheetName, { error: error?.message });
+      importJobManager.emit(job, {
+        type: "row-error",
+        payload: {
+          jobId: job.id,
+          fileName: file.fileName,
+          sheetName,
+          rowIndex: 1,
+          message: error?.message,
+        },
+      });
+    }
+
+    importJobManager.emit(job, {
+      type: "sheet-complete",
+      payload: { jobId: job.id, fileName: file.fileName, sheetName },
+    });
+  }
+}
+
+function parseCsvOrThrow(csvText: string, contextLabel: string) {
+  try {
+    const records = parse(csvText, CSV_PARSE_OPTIONS) as Record<string, any>[];
+    return records.map(normalizeRowKeys);
+  } catch (error: any) {
+    throw new Error(`CSV parse error in ${contextLabel}: ${error?.message || error}`);
+  }
+}
+
+interface ImportTaskContext {
+  fileName: string;
+  sheetName?: string;
+  records: Record<string, any>[];
+  explicitBookName?: string;
+  globalSeenKeys: Set<string>;
+}
+
+async function importFromRecords(
+  job: NonNullable<ReturnType<typeof importJobManager.getJob>>,
+  userId: string,
+  caches: JobImportCaches,
+  ctx: ImportTaskContext
+) {
+  const { fileName, sheetName, records, explicitBookName, globalSeenKeys } = ctx;
+  if (!records.length) return;
+
+  const sheetSummary = addSheetSummary(job, fileName, sheetName, { created: 0, skipped: 0, errors: [] });
+
   const first = records[0];
-
   const libraryNumber = pickCol(first, COLS.libraryNumber);
-  const bookName = pickCol(first, COLS.bookName);
+  let bookName = explicitBookName || pickCol(first, COLS.bookName);
 
-  if (!truthy(libraryNumber) || !truthy(bookName)) {
-    return res.status(400).json({ error: "libraryNumber and bookName are required in the first row" });
+  if (!truthy(libraryNumber)) {
+    const message = "libraryNumber is required (first row)";
+    pushRowError(job, sheetSummary, { rowIndex: 1, message, fields: ["libraryNumber"] }, fileName, sheetName);
+    return;
+  }
+
+  if (!truthy(bookName)) {
+    bookName = String(libraryNumber);
   }
 
   const bookData = {
-    libraryNumber: libraryNumber as string,
-    bookName: bookName as string,
-    bookSummary: pickCol(first, COLS.bookSummary) ?? null,
-    pageNumbers: pickCol(first, COLS.pageNumbers) ?? null,
-    grade: pickCol(first, COLS.grade) ?? null,
-    remark: pickCol(first, COLS.remark) ?? null,
-    edition: pickCol(first, COLS.edition) ?? null,
-    publisherName: pickCol(first, COLS.publisherName) ?? null,
+    libraryNumber: String(libraryNumber).trim(),
+    bookName: String(bookName).trim(),
+    bookSummary: pickCol(first, COLS.bookSummary)?.trim() || null,
+    pageNumbers: pickCol(first, COLS.pageNumbers)?.trim() || null,
+    grade: pickCol(first, COLS.grade)?.trim() || null,
+    remark: pickCol(first, COLS.remark)?.trim() || null,
+    edition: pickCol(first, COLS.edition)?.trim() || null,
+    publisherName: pickCol(first, COLS.publisherName)?.trim() || null,
   };
 
-  let book = await prisma.bookMaster.findFirst({
-    where: { libraryNumber: bookData.libraryNumber as string, userId },
-  });
-
-  if (book) {
-    book = await prisma.bookMaster.update({
-      where: { id: book.id },
-      data: { ...bookData, userId },
-    });
-  } else {
-    book = await prisma.bookMaster.create({
-      data: { ...bookData, userId },
-    });
+  const book = await getOrCreateBookForJob(userId, bookData, caches);
+  const bookTransactionKey = book.id || `${userId}::${bookData.libraryNumber}`;
+  let jobTransactionKeys = caches.transactionKeys.get(bookTransactionKey);
+  if (!jobTransactionKeys) {
+    jobTransactionKeys = new Set();
+    caches.transactionKeys.set(bookTransactionKey, jobTransactionKeys);
   }
 
-  let created = 0;
-  let skipped = 0;
   let lastTitle = "";
   let lastGeneric: string[] = [];
   let lastSpecific: string[] = [];
+  const seenRowKeys = new Set<string>();
 
   for (let i = 1; i < records.length; i++) {
     const row = records[i];
+    const rowIndex = i + 1;
+
     const srNo = pickInt(row, COLS.srNo);
+    const validationFields: string[] = [];
+    const validationMessages: string[] = [];
+
+    if (srNo === undefined || !Number.isFinite(srNo)) {
+      validationFields.push("srNo");
+      validationMessages.push("Serial number missing or invalid");
+    }
 
     let title = pickCol(row, COLS.title);
     if (truthy(title)) lastTitle = title as string;
@@ -212,6 +591,58 @@ async function handleImport(req: NextApiRequest, res: NextApiResponse, userId: s
     if (specificNames.length) lastSpecific = specificNames;
     else if (lastSpecific.length) specificNames = [...lastSpecific];
 
+    if (!truthy(title)) {
+      validationFields.push("title");
+      validationMessages.push("Title is required (use carry-down or fill row)");
+    }
+
+    if (validationMessages.length) {
+      pushRowError(
+        job,
+        sheetSummary,
+        { rowIndex, message: validationMessages.join("; "), fields: validationFields },
+        fileName,
+        sheetName
+      );
+      continue;
+    }
+
+    const srNoValue = Number.isFinite(srNo) ? Number(srNo) : null;
+    const normalizedTitleKey = normalizeText(title || lastTitle || "");
+    const dedupeKey = `${srNoValue ?? "nosr"}::${normalizedTitleKey || `row-${rowIndex}`}`;
+
+    if (seenRowKeys.has(dedupeKey)) {
+      pushRowError(
+        job,
+        sheetSummary,
+        {
+          rowIndex,
+          message: "Duplicate row detected within the same sheet (matching Sr No./Title). Skipped.",
+          fields: ["srNo", "title"],
+        },
+        fileName,
+        sheetName
+      );
+      continue;
+    }
+    seenRowKeys.add(dedupeKey);
+    if (jobTransactionKeys.has(dedupeKey) || globalSeenKeys.has(dedupeKey)) {
+      pushRowError(
+        job,
+        sheetSummary,
+        {
+          rowIndex,
+          message: "Duplicate row detected in another sheet/file (matching Sr No./Title). Skipped.",
+          fields: ["srNo", "title"],
+        },
+        fileName,
+        sheetName
+      );
+      continue;
+    }
+    jobTransactionKeys.add(dedupeKey);
+    globalSeenKeys.add(dedupeKey);
+
     const tagCategory = pickCol(row, COLS.tagCategory) ?? null;
     const keywords = pickCol(row, COLS.keywords) ?? null;
     const relevantParagraph = maybeParseJSON(pickCol(row, COLS.relevantParagraph));
@@ -221,6 +652,7 @@ async function handleImport(req: NextApiRequest, res: NextApiResponse, userId: s
     const itemRemark = pickCol(row, COLS.itemRemark) ?? null;
     const summary = pickCol(row, COLS.summary) ?? null;
     const conclusion = pickCol(row, COLS.conclusion) ?? null;
+    const rowTitle = truthy(title) ? (title as string) : null;
 
     try {
       const genericRecords = genericNames.length
@@ -247,47 +679,182 @@ async function handleImport(req: NextApiRequest, res: NextApiResponse, userId: s
           )
         : [];
 
-      await prisma.summaryTransaction.create({
-        data: {
-          srNo: Number.isFinite(srNo) ? (srNo as number) : 0,
-          title: truthy(title) ? (title as string) : null,
-          keywords,
-          relevantParagraph: relevantParagraph ?? null,
-          paragraphNo,
-          pageNo,
-          informationRating,
-          remark: itemRemark,
-          summary,
-          conclusion,
-          bookId: book.id,
-          userId,
-          genericSubjects: genericRecords.length
-            ? {
-                create: genericRecords.map((record) => ({
-                  genericSubject: { connect: { id: record.id } },
-                })),
-              }
-            : undefined,
-          specificSubjects: specificRecords.length
-            ? {
-                create: specificRecords.map((record) => ({
-                  tag: { connect: { id: record.id } },
-                })),
-              }
-            : undefined,
+      const transactionData = {
+        srNo: srNoValue ?? 0,
+        title: rowTitle,
+        keywords,
+        relevantParagraph: relevantParagraph ?? null,
+        paragraphNo,
+        pageNo,
+        informationRating,
+        remark: itemRemark,
+        summary,
+        conclusion,
+        bookId: book.id,
+        userId,
+      };
+
+      let existingTransaction = null;
+      if (srNoValue !== null) {
+        existingTransaction = await prisma.summaryTransaction.findFirst({
+          where: { bookId: book.id, userId, srNo: srNoValue },
+        });
+      } else if (rowTitle) {
+        existingTransaction = await prisma.summaryTransaction.findFirst({
+          where: { bookId: book.id, userId, title: rowTitle },
+        });
+      }
+
+      if (existingTransaction) {
+        await prisma.summaryTransaction.update({
+          where: { id: existingTransaction.id },
+          data: {
+            ...transactionData,
+            genericSubjects: genericRecords.length
+              ? {
+                  deleteMany: {},
+                  create: genericRecords.map((record) => ({
+                    genericSubject: { connect: { id: record.id } },
+                  })),
+                }
+              : { deleteMany: {} },
+            specificSubjects: specificRecords.length
+              ? {
+                  deleteMany: {},
+                  create: specificRecords.map((record) => ({
+                    tag: { connect: { id: record.id } },
+                  })),
+                }
+              : { deleteMany: {} },
+          },
+        });
+      } else {
+        await prisma.summaryTransaction.create({
+          data: {
+            ...transactionData,
+            genericSubjects: genericRecords.length
+              ? {
+                  create: genericRecords.map((record) => ({
+                    genericSubject: { connect: { id: record.id } },
+                  })),
+                }
+              : undefined,
+            specificSubjects: specificRecords.length
+              ? {
+                  create: specificRecords.map((record) => ({
+                    tag: { connect: { id: record.id } },
+                  })),
+                }
+              : undefined,
+          },
+        });
+        sheetSummary.created += 1;
+        importJobManager.updateSummary(job, (draft) => {
+          draft.totalCreated += 1;
+        });
+      }
+
+      importJobManager.emit(job, {
+        type: "row-success",
+        payload: {
+          jobId: job.id,
+          fileName,
+          sheetName,
+          rowIndex,
+          mode: existingTransaction ? "updated" : "created",
         },
       });
-      created++;
-    } catch (error) {
-      console.error(`Failed to create SummaryTransaction for row ${i + 2}`, error);
-      skipped++;
+    } catch (error: any) {
+      const message = error?.message || "Failed to save transaction";
+      pushRowError(
+        job,
+        sheetSummary,
+        { rowIndex, message, fields: ["database"] },
+        fileName,
+        sheetName
+      );
     }
   }
+}
 
-  return res.status(200).json({
-    bookId: book.id,
-    stats: { created, skipped },
+function addSheetSummary(
+  job: NonNullable<ReturnType<typeof importJobManager.getJob>>,
+  fileName: string,
+  sheetName?: string,
+  overrides?: Partial<{ created: number; skipped: number; errors: RowError[]; error: string }>
+) {
+  let sheetRef: { name: string; created: number; skipped: number; errors: RowError[]; error?: string } | undefined;
+  importJobManager.updateSummary(job, (draft) => {
+    const file = draft.files.find((f) => f.fileName === fileName);
+    if (!file) return;
+    const existing = file.sheets.find((s) => s.name === (sheetName || "Sheet1"));
+    if (existing) {
+      if (overrides?.error) existing.error = overrides.error;
+      sheetRef = existing;
+      return;
+    }
+    const sheetSummary = {
+      name: sheetName || "Sheet1",
+      created: overrides?.created ?? 0,
+      skipped: overrides?.skipped ?? 0,
+      errors: overrides?.errors ?? [],
+      error: overrides?.error,
+    };
+    file.sheets.push(sheetSummary);
+    sheetRef = sheetSummary;
   });
+  return sheetRef!;
+}
+
+function pushRowError(
+  job: NonNullable<ReturnType<typeof importJobManager.getJob>>,
+  sheetSummary: { created: number; skipped: number; errors: RowError[]; error?: string },
+  error: RowError,
+  fileName: string,
+  sheetName?: string
+) {
+  sheetSummary.skipped += 1;
+  sheetSummary.errors.push(error);
+  importJobManager.updateSummary(job, (draft) => {
+    draft.totalSkipped += 1;
+  });
+  importJobManager.emit(job, {
+    type: "row-error",
+    payload: { jobId: job.id, fileName, sheetName, ...error },
+  });
+}
+
+async function getOrCreateBookForJob(
+  userId: string,
+  data: BookPayload,
+  caches: JobImportCaches
+): Promise<BookRecord> {
+  const normalizedKey = normalizeText(data.libraryNumber) || data.libraryNumber;
+  const cacheKey = `${userId}::${normalizedKey}`;
+
+  let promise = caches.books.get(cacheKey);
+  if (!promise) {
+    promise = (async () => {
+      const existing = await prisma.bookMaster.findFirst({
+        where: { userId, libraryNumber: data.libraryNumber },
+      });
+
+      if (existing) {
+        return prisma.bookMaster.update({
+          where: { id: existing.id },
+          data: { ...data, userId },
+        });
+      }
+
+      return prisma.bookMaster.create({
+        data: { ...data, userId },
+      });
+    })();
+
+    caches.books.set(cacheKey, promise);
+  }
+
+  return promise;
 }
 
 async function handleExport(req: NextApiRequest, res: NextApiResponse, userId: string) {
@@ -364,6 +931,9 @@ async function handleExport(req: NextApiRequest, res: NextApiResponse, userId: s
 
   const csv = rows.map((row) => row.join(",")).join("\n");
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="book-export-${book.libraryNumber}.csv"`);
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="book-export-${book.libraryNumber}.csv"`
+  );
   return res.status(200).send(`\uFEFF${csv}`);
 }

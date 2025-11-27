@@ -4,6 +4,7 @@ export interface User {
   id: string;
   email: string;
   name?: string;
+  role?: 'admin' | 'user' | string;
   createdAt: string;
   updatedAt: string;
 }
@@ -14,6 +15,7 @@ export interface GenericSubjectMaster {
   description?: string | null;
   createdAt: string;
   updatedAt: string;
+  defaultForUser?: boolean;
   _count?: {
     summaryTransactions: number;
   };
@@ -26,6 +28,7 @@ export interface TagMaster {
   category?: string | null;
   createdAt: string;
   updatedAt: string;
+  defaultForUser?: boolean;
   _count?: {
     summaryTransactions: number;
   };
@@ -48,6 +51,8 @@ export interface BookMaster {
   remark?: string | null;
   edition?: string | null;
   publisherName?: string | null;
+  coverImageUrl?: string | null;
+  coverImagePublicId?: string | null;
   createdAt: string;
   updatedAt: string;
   editors?: BookEditor[];
@@ -73,6 +78,9 @@ export interface SummaryTransaction {
   remark?: string | null;
   summary?: string | null;
   conclusion?: string | null;
+  footNote?: string | null;
+  imageUrl?: string | null;
+  imagePublicId?: string | null;
   createdAt: string;
   updatedAt: string;
   bookId: string;
@@ -139,7 +147,9 @@ export interface BookFormData {
   remark?: string;
   edition?: string;
   publisherName?: string;
-  editors: Array<{ name: string; role?: string }>;
+  coverImageUrl?: string | null;
+  coverImagePublicId?: string | null;
+  editors: Array<{ name: string; role?: string | null }>;
 }
 
 export interface TransactionFormData {
@@ -155,12 +165,15 @@ export interface TransactionFormData {
   remark?: string;
   summary?: string;
   conclusion?: string;
+  footNote?: string | null;
   bookId: string;
+  imageUrl?: string | null;
+  imagePublicId?: string | null;
 }
 
 // Utility types
 export type InformationRating = 'High' | 'Medium' | 'Low';
-export type EditorRole = 'Editor' | 'Co-editor' | 'Chief Editor' | 'Assistant Editor';
+export type EditorRole = 'Editor' | 'Co-editor' | 'Chief Editor' | 'Assistant Editor' | 'Author' | 'Translator';
 
 // API helpers
 export type ApiMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
@@ -248,4 +261,55 @@ export interface SubjectFormData {
   name: string;
   description?: string;
   category?: string;
+}
+
+// Import job types
+export interface ImportRowError {
+  rowIndex: number;
+  message: string;
+  fields?: string[];
+}
+
+export interface ImportSheetSummary {
+  name: string;
+  created: number;
+  skipped: number;
+  errors: ImportRowError[];
+  error?: string;
+}
+
+export interface ImportFileSummary {
+  fileName: string;
+  fileType: string;
+  sheets: ImportSheetSummary[];
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  error?: string;
+}
+
+export interface ImportJobSummary {
+  jobId: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  userId: string;
+  files: ImportFileSummary[];
+  startedAt: string;
+  finishedAt?: string;
+  totalCreated: number;
+  totalSkipped: number;
+}
+
+export interface ImportJobEvent<TPayload = any> {
+  type:
+    | 'job-created'
+    | 'job-started'
+    | 'job-completed'
+    | 'job-failed'
+    | 'file-start'
+    | 'file-complete'
+    | 'file-error'
+    | 'sheet-start'
+    | 'sheet-complete'
+    | 'row-success'
+    | 'row-error'
+    | 'summary';
+  payload: TPayload;
 }

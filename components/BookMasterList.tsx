@@ -11,6 +11,7 @@ import {
   StatsCard,
   LoadingSpinner,
 } from './CoreComponents';
+import CreatableSelect from 'react-select/creatable';
 import {
   BookMaster,
   BooksResponse,
@@ -22,6 +23,7 @@ import {
   PaginationInfo,
   AlertProps,
 } from '../types';
+import ImageUploader from './ImageUploader';
 
 const BookMasterList: React.FC = () => {
   const [books, setBooks] = useState<BookMaster[]>([]);
@@ -88,9 +90,18 @@ const BookMasterList: React.FC = () => {
   };
   const handlePageChange = (page: number) => fetchBooks(page, searchTerm);
   const handleViewBook = (b: BookMaster) => (window.location.href = `/books/${b.id}`);
-  const handleEditBook = (b: BookMaster) => {
-    setSelectedBook(b);
-    setShowEditModal(true);
+  const handleEditBook = async (b: BookMaster) => {
+    setSelectedBook(null);
+    try {
+      const res = await fetch(`/api/books/${b.id}`);
+      if (!res.ok) throw new Error('Failed to load book details');
+      const data = await res.json();
+      setSelectedBook({ ...data, editors: data.editors ?? [] });
+      setShowEditModal(true);
+    } catch (error: any) {
+      console.error('Error loading book', error);
+      setAlert({ type: 'error', message: error?.message || 'Unable to load book details' });
+    }
   };
   const handleDeleteBook = async (b: BookMaster) => {
     if (!confirm(`Delete "${b.bookName}"?`)) return;
@@ -105,6 +116,16 @@ const BookMasterList: React.FC = () => {
   };
 
   const columns: DataTableColumn<BookMaster>[] = [
+    {
+      key: 'coverImageUrl',
+      label: 'Image',
+      render: (v: string | null, row) =>
+        v ? (
+          <img src={v} alt={row.bookName} className="h-12 w-10 rounded object-cover border border-gray-200" />
+        ) : (
+          <div className="h-12 w-10 rounded border border-dashed border-gray-300 bg-gray-50"></div>
+        ),
+    },
     {
       key: 'libraryNumber',
       label: 'Library Number',
@@ -265,7 +286,9 @@ interface BookFormProps {
 }
 
 export const BookForm: React.FC<BookFormProps> = ({ initialData = {}, onSubmit, onCancel }) => {
-  const [formData, setFormData] = useState<BookFormData>({
+  const ROLE_OPTIONS = ['Editor', 'Co-editor', 'Chief Editor', 'Assistant Editor', 'Author', 'Translator'];
+
+  const baseDefaults = {
     libraryNumber: '',
     bookName: '',
     bookSummary: '',
@@ -274,12 +297,43 @@ export const BookForm: React.FC<BookFormProps> = ({ initialData = {}, onSubmit, 
     remark: '',
     edition: '',
     publisherName: '',
+    coverImageUrl: null,
+    coverImagePublicId: null,
     editors: [],
-    ...initialData,
-  } as BookFormData);
+  };
+
+  const normalizeInitial = (data: Partial<BookMaster> = {}): BookFormData => ({
+    ...baseDefaults,
+    ...data,
+    libraryNumber: data.libraryNumber ?? '',
+    bookName: data.bookName ?? '',
+    bookSummary: data.bookSummary ?? '',
+    pageNumbers: data.pageNumbers ?? '',
+    grade: data.grade ?? '',
+    remark: data.remark ?? '',
+    edition: data.edition ?? '',
+    publisherName: data.publisherName ?? '',
+    coverImageUrl: data.coverImageUrl ?? null,
+    coverImagePublicId: data.coverImagePublicId ?? null,
+    editors: Array.isArray(data.editors)
+      ? data.editors.map((editor) => ({
+          name: editor?.name ?? '',
+          role: editor?.role ?? null,
+        }))
+      : [],
+  });
+
+  const [formData, setFormData] = useState<BookFormData>(normalizeInitial(initialData));
 
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<Partial<Record<keyof BookFormData, string>>>({});
+
+  useEffect(() => {
+    if ((initialData as any)?.id) {
+      setFormData(normalizeInitial(initialData));
+      setErrors({});
+    }
+  }, [(initialData as any)?.id]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
@@ -288,13 +342,15 @@ export const BookForm: React.FC<BookFormProps> = ({ initialData = {}, onSubmit, 
   };
 
   const setEditor = (idx: number, field: keyof BookFormData['editors'][number], val: string) => {
-    const next = [...formData.editors];
+    const next = [...(formData.editors || [])];
     next[idx] = { ...next[idx], [field]: val };
     setFormData((p) => ({ ...p, editors: next }));
   };
 
-  const addEditor = () => setFormData((p) => ({ ...p, editors: [...p.editors, { name: '', role: 'Editor' }] }));
-  const removeEditor = (idx: number) => setFormData((p) => ({ ...p, editors: p.editors.filter((_, i) => i !== idx) }));
+  const addEditor = () =>
+    setFormData((p) => ({ ...p, editors: [...(p.editors || []), { name: '', role: 'Editor' }] }));
+  const removeEditor = (idx: number) =>
+    setFormData((p) => ({ ...p, editors: (p.editors || []).filter((_, i) => i !== idx) }));
 
   const validate = () => {
     const e: Partial<Record<keyof BookFormData, string>> = {};
@@ -309,7 +365,10 @@ export const BookForm: React.FC<BookFormProps> = ({ initialData = {}, onSubmit, 
     if (!validate()) return;
     setLoading(true);
     try {
-      await onSubmit(formData);
+      const editors = (formData.editors || [])
+        .map((ed) => ({ ...ed, name: (ed.name || '').trim() }))
+        .filter((ed) => ed.name);
+      await onSubmit({ ...formData, editors });
     } finally {
       setLoading(false);
     }
@@ -321,6 +380,21 @@ export const BookForm: React.FC<BookFormProps> = ({ initialData = {}, onSubmit, 
         <FormInput label="Library Number" name="libraryNumber" value={formData.libraryNumber} onChange={handleChange} required error={errors.libraryNumber} placeholder="B009361" />
         <FormInput label="Book Name" name="bookName" value={formData.bookName} onChange={handleChange} required error={errors.bookName} placeholder="Enter book name" />
       </div>
+
+      <ImageUploader
+        label="Book Image"
+        value={formData.coverImageUrl ? { url: formData.coverImageUrl, publicId: formData.coverImagePublicId } : null}
+        onChange={(val) =>
+          setFormData((p) => ({
+            ...p,
+            coverImageUrl: val?.url ?? null,
+            coverImagePublicId: val?.publicId ?? null,
+          }))
+        }
+        aspect={3 / 4}
+        uploadFolder="books"
+        helpText="Use a cropped cover or reference image for this book."
+      />
 
       <FormInput label="Book Summary" name="bookSummary" type="textarea" rows={4} value={formData.bookSummary} onChange={handleChange} placeholder="Enter a comprehensive book summary..." />
 
@@ -344,7 +418,9 @@ export const BookForm: React.FC<BookFormProps> = ({ initialData = {}, onSubmit, 
           </button>
         </div>
 
-        {formData.editors.map((ed, i) => (
+        {(formData.editors || []).map((ed, i) => {
+          const selectValue = ed.role ? { value: ed.role, label: ed.role } : null;
+          return (
           <div key={i} className="flex items-center space-x-4 p-4 border border-gray-200 rounded-md">
             <div className="flex-1">
               <input
@@ -356,22 +432,26 @@ export const BookForm: React.FC<BookFormProps> = ({ initialData = {}, onSubmit, 
               />
             </div>
             <div className="w-40">
-              <select
-                value={ed.role || 'Editor'}
-                onChange={(e) => setEditor(i, 'role', e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="Editor">Editor</option>
-                <option value="Co-editor">Co-editor</option>
-                <option value="Chief Editor">Chief Editor</option>
-                <option value="Assistant Editor">Assistant Editor</option>
-              </select>
+              <CreatableSelect
+                isClearable
+                value={selectValue}
+                onChange={(option) => setEditor(i, 'role', option?.value || '')}
+                options={ROLE_OPTIONS.map((r) => ({ value: r, label: r }))}
+                classNamePrefix="react-select"
+                placeholder="Role"
+                styles={{
+                  menuPortal: (base) => ({ ...base, zIndex: 9999 }),
+                  control: (base) => ({ ...base, minHeight: '42px' }),
+                }}
+                menuPortalTarget={typeof document !== 'undefined' ? document.body : undefined}
+              />
             </div>
             <button type="button" onClick={() => removeEditor(i)} className="text-red-600 hover:text-red-700">
               Remove
             </button>
           </div>
-        ))}
+          );
+        })}
       </div>
 
       <div className="flex items-center justify-end space-x-4 pt-6 border-t border-gray-200">

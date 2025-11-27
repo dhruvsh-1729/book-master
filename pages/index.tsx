@@ -1,6 +1,6 @@
 // pages/index.tsx
 import React, { useState, useEffect } from 'react';
-import { Book, FileText, Tag, TrendingUp } from 'lucide-react';
+import { Book, FileText, Tag, TrendingUp, BarChart2, Activity, Users } from 'lucide-react';
 import { Card, StatsCard } from '../components/CoreComponents';
 import {
   DashboardStats,
@@ -22,6 +22,12 @@ const Dashboard: React.FC = () => {
   const [recentBooks, setRecentBooks] = useState<BookMaster[]>([]);
   const [recentTransactions, setRecentTransactions] = useState<SummaryTransaction[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [charts, setCharts] = useState<any>({
+    monthlyTrends: [],
+    ratingDistribution: [],
+    topPublishers: [],
+  });
+  const [insightsError, setInsightsError] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchDashboardData = async () => {
@@ -56,6 +62,17 @@ const Dashboard: React.FC = () => {
           totalGenericSubjects: generic?.pagination?.total ?? 0,
           totalSpecificTags: tags?.pagination?.total ?? 0,
         }));
+        try {
+          const chartsRes = await fetch('/api/dashboard/charts');
+          if (chartsRes.ok) {
+            const chartJson = await chartsRes.json();
+            setCharts(chartJson);
+          } else {
+            setInsightsError('Unable to load insights');
+          }
+        } catch (e) {
+          setInsightsError('Unable to load insights');
+        }
       } catch (err) {
         console.error('Dashboard load error:', err);
       } finally {
@@ -81,6 +98,70 @@ const Dashboard: React.FC = () => {
         <StatsCard title="Total Transactions" value={stats.totalTransactions} icon={FileText} color="green" />
         <StatsCard title="Generic Subjects" value={stats.totalGenericSubjects} icon={Tag} color="yellow" />
         <StatsCard title="Specific Tags" value={stats.totalSpecificTags} icon={Tag} color="red" />
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+        <Card title="Monthly Trends" icon={BarChart2}>
+          {charts.monthlyTrends?.length ? (
+            <div className="space-y-3">
+              {charts.monthlyTrends.slice(-6).map((item: any) => {
+                const max = Math.max(...charts.monthlyTrends.map((m: any) => m.books + m.transactions), 1);
+                const combined = (item.books || 0) + (item.transactions || 0);
+                const width = Math.max(8, Math.min(100, Math.round((combined / max) * 100)));
+                return (
+                  <div key={item.month}>
+                    <div className="flex justify-between text-xs text-gray-600 mb-1">
+                      <span>{item.month}</span>
+                      <span>{item.books} books / {item.transactions} txns</span>
+                    </div>
+                    <div className="h-2 rounded-full bg-gray-100 overflow-hidden">
+                      <div className="h-full bg-blue-500" style={{ width: `${width}%` }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="py-6 text-sm text-gray-500">{insightsError || 'No trend data yet'}</div>
+          )}
+        </Card>
+
+        <Card title="Rating Distribution" icon={Activity}>
+          {charts.ratingDistribution?.length ? (
+            <div className="space-y-3">
+              {charts.ratingDistribution.map((item: any) => {
+                const max = Math.max(...charts.ratingDistribution.map((r: any) => r.count), 1);
+                const width = Math.max(10, Math.min(100, Math.round((item.count / max) * 100)));
+                return (
+                  <div key={item.rating} className="flex items-center gap-3">
+                    <span className="w-20 text-xs text-gray-600">{item.rating}</span>
+                    <div className="flex-1 h-2 rounded-full bg-gray-100 overflow-hidden">
+                      <div className="h-full bg-green-500" style={{ width: `${width}%` }} />
+                    </div>
+                    <span className="text-xs text-gray-600">{item.count}</span>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="py-6 text-sm text-gray-500">{insightsError || 'No rating data yet'}</div>
+          )}
+        </Card>
+
+        <Card title="Top Publishers" icon={Users}>
+          {charts.topPublishers?.length ? (
+            <div className="space-y-2">
+              {charts.topPublishers.slice(0, 6).map((p: any) => (
+                <div key={p.publisher} className="flex justify-between text-sm text-gray-700">
+                  <span className="truncate max-w-[70%]">{p.publisher}</span>
+                  <span className="text-gray-500">{p.count} books</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="py-6 text-sm text-gray-500">{insightsError || 'No publisher data yet'}</div>
+          )}
+        </Card>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">

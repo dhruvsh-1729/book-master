@@ -16,11 +16,14 @@ model User {
   email     String   @unique
   name      String?
   password  String?
+  role      String   @default("user")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   books               BookMaster[]
   summaryTransactions SummaryTransaction[]
+  defaultGenericSubjects UserDefaultGenericSubject[]
+  defaultSpecificTags    UserDefaultSpecificTag[]
 
   @@map("users")
 }
@@ -33,6 +36,7 @@ model GenericSubjectMaster {
   updatedAt   DateTime @updatedAt
 
   summaryTransactions SummaryTransactionGenericSubject[]
+  defaultForUsers     UserDefaultGenericSubject[]
 
   @@map("generic_subject_masters")
 }
@@ -46,6 +50,7 @@ model TagMaster {
   updatedAt   DateTime @updatedAt
 
   summaryTransactions SummaryTransactionSpecificTag[]
+  defaultForUsers     UserDefaultSpecificTag[]
 
   @@index([category])
   @@map("tag_masters")
@@ -53,7 +58,7 @@ model TagMaster {
 
 model BookMaster {
   id            String   @id @default(auto()) @map("_id") @db.ObjectId
-  libraryNumber String   @unique
+  libraryNumber String
   bookName      String
   bookSummary   String?
   pageNumbers   String?
@@ -61,6 +66,8 @@ model BookMaster {
   remark        String?
   edition       String?
   publisherName String?
+  coverImageUrl String?
+  coverImagePublicId String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -105,6 +112,9 @@ model SummaryTransaction {
   remark            String?
   summary           String?
   conclusion        String?
+  footNote          String?
+  imageUrl          String?
+  imagePublicId     String?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -152,4 +162,32 @@ model SummaryTransactionSpecificTag {
   @@unique([summaryTransactionId, tagId])
   @@index([tagId])
   @@map("summary_transaction_specific_tags")
+}
+
+model UserDefaultGenericSubject {
+  id               String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId           String   @db.ObjectId
+  genericSubjectId String   @db.ObjectId
+  createdAt        DateTime @default(now())
+
+  user           User                @relation(fields: [userId], references: [id])
+  genericSubject GenericSubjectMaster @relation(fields: [genericSubjectId], references: [id])
+
+  @@unique([userId, genericSubjectId])
+  @@index([genericSubjectId])
+  @@map("user_default_generic_subjects")
+}
+
+model UserDefaultSpecificTag {
+  id      String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId  String   @db.ObjectId
+  tagId   String   @db.ObjectId
+  createdAt DateTime @default(now())
+
+  user User     @relation(fields: [userId], references: [id])
+  tag  TagMaster @relation(fields: [tagId], references: [id])
+
+  @@unique([userId, tagId])
+  @@index([tagId])
+  @@map("user_default_specific_tags")
 }

@@ -24,6 +24,8 @@ export interface BookCreateData {
   edition?: string;
   publisherName?: string;
   userId: string;
+  coverImageUrl?: string | null;
+  coverImagePublicId?: string | null;
 
   /** Related rows to create */
   editors?: Array<{ name: string; role?: string }>;
@@ -110,15 +112,6 @@ export class BookRepository extends BaseRepository {
   async create(data: BookCreateData) {
     const { editors, ...bookData } = data;
 
-    // Unique per user on (libraryNumber,userId)
-    const existing = await this.prisma.bookMaster.findFirst({
-      where: { libraryNumber: bookData.libraryNumber, userId: bookData.userId },
-      select: { id: true },
-    });
-    if (existing) {
-      throw new ApiError(400, "Library number already exists", "DUPLICATE_LIBRARY_NUMBER");
-    }
-
     return await this.prisma.$transaction(async (tx) => {
       const book = await tx.bookMaster.create({ data: bookData });
 
@@ -178,6 +171,17 @@ export class BookRepository extends BaseRepository {
     await this.findById(id, userId);
 
     await this.prisma.$transaction(async (tx) => {
+      const txIds = await tx.summaryTransaction.findMany({
+        where: { bookId: id },
+        select: { id: true },
+      });
+      const summaryIds = txIds.map((t) => t.id);
+
+      if (summaryIds.length) {
+        await tx.summaryTransactionSpecificTag.deleteMany({ where: { summaryTransactionId: { in: summaryIds } } });
+        await tx.summaryTransactionGenericSubject.deleteMany({ where: { summaryTransactionId: { in: summaryIds } } });
+      }
+
       await Promise.all([
         tx.bookEditor.deleteMany({ where: { bookId: id } }),
         tx.summaryTransaction.deleteMany({ where: { bookId: id } }),

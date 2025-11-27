@@ -63,8 +63,12 @@ const TransactionsPage: React.FC = () => {
         });
 
         const response = await fetch(`/api/transactions?${params.toString()}`);
-        if (!response.ok) throw new Error('Failed to fetch transactions');
-        const data = await response.json();
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const message = data?.error || 'Failed to fetch transactions';
+          setGlobalAlert({ type: 'error', message });
+          return;
+        }
         setTransactions(data.transactions || []);
         setPagination(data.pagination || { page, limit: PAGE_SIZE, total: 0, pages: 0 });
       } catch (error) {
@@ -207,6 +211,16 @@ const TransactionsPage: React.FC = () => {
       key: 'srNo',
       label: 'Sr No.',
       render: (value: number) => <span className="font-mono text-sm bg-gray-100 px-2 py-1 rounded">{value}</span>,
+    },
+    {
+      key: 'imageUrl',
+      label: 'Image',
+      render: (value: string | null) =>
+        value ? (
+          <span className="inline-flex items-center px-2 py-1 rounded-full text-[11px] font-medium bg-purple-100 text-purple-800">Attached</span>
+        ) : (
+          <span className="text-gray-400 text-xs">None</span>
+        ),
     },
     {
       key: 'book',
