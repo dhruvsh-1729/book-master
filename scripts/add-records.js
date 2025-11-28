@@ -36,7 +36,7 @@ const COLS = {
 
   // Subjects
   genericSubjectName: ['genericSubject', 'Generic Subject', 'Subject (Generic)'],
-  specificTagName: ['specificSubject', 'Specific Subject', 'Tag', 'Specific Tag', 'Specific'],
+  specificTagName: ['specificSubject', 'Specific Subject', 'Tag', 'Specific'],
   tagCategory: ['category', 'Tag Category', 'Specific Category'], // optional
 };
 
