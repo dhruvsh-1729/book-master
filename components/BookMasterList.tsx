@@ -25,6 +25,7 @@ import {
 } from '../types';
 import ImageUploader from './ImageUploader';
 import MultiImageUploader from './MultiImageUploader';
+import { MediaImage } from '../types';
 
 const BookMasterList: React.FC = () => {
   const [books, setBooks] = useState<BookMaster[]>([]);

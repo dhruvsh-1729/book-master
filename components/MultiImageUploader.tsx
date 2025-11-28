@@ -1,11 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Image as ImageIcon, Upload, Trash2 } from 'lucide-react';
-
-export interface MediaImage {
-  id?: string;
-  url: string;
-  publicId?: string | null;
-}
+import { MediaImage } from '../types';
 
 interface MultiImageUploaderProps {
   label?: string;

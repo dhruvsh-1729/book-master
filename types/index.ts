@@ -42,7 +42,7 @@ export interface BookEditor {
 }
 
 export interface MediaImage {
-  id: string;
+  id?: string;
   url: string;
   publicId?: string | null;
 }

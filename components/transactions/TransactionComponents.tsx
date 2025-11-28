@@ -12,7 +12,8 @@ import {
 } from '../../types';
 import { useDebounce } from '../../hooks/useDebounce';
 import ImageUploader from '../ImageUploader';
-import MultiImageUploader, { MediaImage } from '../MultiImageUploader';
+import MultiImageUploader from '../MultiImageUploader';
+import { MediaImage } from '../../types';
 
 type RemoteCollectionKey = 'subjects' | 'tags';
 
