@@ -41,6 +41,12 @@ export interface BookEditor {
   role?: string | null;
 }
 
+export interface MediaImage {
+  id: string;
+  url: string;
+  publicId?: string | null;
+}
+
 export interface BookMaster {
   id: string;
   libraryNumber: string;
@@ -53,6 +59,7 @@ export interface BookMaster {
   publisherName?: string | null;
   coverImageUrl?: string | null;
   coverImagePublicId?: string | null;
+  images?: MediaImage[];
   createdAt: string;
   updatedAt: string;
   editors?: BookEditor[];
@@ -81,6 +88,7 @@ export interface SummaryTransaction {
   footNote?: string | null;
   imageUrl?: string | null;
   imagePublicId?: string | null;
+  images?: MediaImage[];
   createdAt: string;
   updatedAt: string;
   bookId: string;
@@ -149,6 +157,7 @@ export interface BookFormData {
   publisherName?: string;
   coverImageUrl?: string | null;
   coverImagePublicId?: string | null;
+  images?: MediaImage[];
   editors: Array<{ name: string; role?: string | null }>;
 }
 
@@ -169,6 +178,7 @@ export interface TransactionFormData {
   bookId: string;
   imageUrl?: string | null;
   imagePublicId?: string | null;
+  images?: MediaImage[];
 }
 
 // Utility types

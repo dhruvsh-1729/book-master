@@ -64,14 +64,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             createdAt: true,
             updatedAt: true,
             editor: true,
+            images: true,
           },
         }),
         prisma.bookMaster.count({ where }),
       ]);
 
       const normalized = books.map((book: any) => {
-        const { editor, ...rest } = book;
-        return { ...rest, editors: editor ?? [] };
+        const { editor, images, ...rest } = book;
+        return { ...rest, editors: editor ?? [], images: images ?? [] };
       });
 
       return res.status(200).json({
@@ -95,6 +96,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         publisherName,
         coverImageUrl,
         coverImagePublicId,
+        images,
         editors,
       } = req.body ?? {};
 
@@ -114,6 +116,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             .slice(0, 25)
         : [];
 
+      const normalizedImages =
+        Array.isArray(images) && images.length
+          ? images
+              .map((img: any) => ({
+                url: String(img.url || "").trim(),
+                publicId: img.publicId ? String(img.publicId) : null,
+              }))
+              .filter((img: any) => img.url)
+          : [];
+      const primaryImage = normalizedImages[0];
+
       const created = await prisma.$transaction(async (tx) => {
         const book = await tx.bookMaster.create({
           data: {
@@ -125,11 +138,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             remark: remark ?? null,
             edition: edition ?? null,
             publisherName: publisherName ?? null,
-            coverImageUrl: coverImageUrl ?? null,
-            coverImagePublicId: coverImagePublicId ?? null,
+            coverImageUrl: (primaryImage?.url ?? coverImageUrl) || null,
+            coverImagePublicId: (primaryImage?.publicId ?? coverImagePublicId) || null,
             userId,
           },
         });
+
+        if (normalizedImages.length) {
+          await tx.bookImage.createMany({
+            data: normalizedImages.map((img: any) => ({
+              bookId: book.id,
+              url: img.url,
+              publicId: img.publicId,
+            })),
+          });
+        }
 
         if (normalizedEditors.length) {
           await tx.bookEditor.createMany({
@@ -158,12 +181,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             createdAt: true,
             updatedAt: true,
             editor: true,
+            images: true,
           },
         });
       });
 
-      const { editor: createdEditors, ...rest } = (created as any) || {};
-      return res.status(201).json({ ...rest, editors: createdEditors ?? [] });
+      const { editor: createdEditors, images: createdImages, ...rest } = (created as any) || {};
+      return res.status(201).json({ ...rest, editors: createdEditors ?? [], images: createdImages ?? [] });
     } catch (e: any) {
       console.error("POST /books error", e);
       return res.status(500).json({ error: "Failed to create book" });

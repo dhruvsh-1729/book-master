@@ -29,10 +29,12 @@ const transactionInclude = {
   user: { select: { id: true, name: true, email: true } },
   genericSubjects: { include: { genericSubject: true } },
   specificSubjects: { include: { tag: true } },
+  images: true,
 } as const;
 
 const mapTransaction = (transaction: any) => ({
   ...transaction,
+  images: transaction.images || [],
   genericSubjects: (transaction.genericSubjects || [])
     .map((link: any) => link.genericSubject)
     .filter(Boolean),
@@ -83,6 +85,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         footNote,
         imageUrl,
         imagePublicId,
+        images,
       } = req.body ?? {};
 
       // if srNo is changing, ensure uniqueness within the same book
@@ -105,6 +108,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const genericIds = genericSubjectIds !== undefined ? toIdArray(genericSubjectIds) : undefined;
       const specificIds = specificSubjectIds !== undefined ? toIdArray(specificSubjectIds) : undefined;
 
+      const normalizedImages =
+        Array.isArray(images) && images.length
+          ? images
+              .map((img: any) => ({
+                url: String(img.url || "").trim(),
+                publicId: img.publicId ? String(img.publicId) : null,
+              }))
+              .filter((img: any) => img.url)
+          : undefined;
+      const primaryImage = normalizedImages?.[0];
+
       const updated = await prisma.summaryTransaction.update({
         where: { id },
         data: {
@@ -119,8 +133,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           summary: summary ?? undefined,
           conclusion: conclusion ?? undefined,
           ...(footNote !== undefined ? { footNote: footNote ?? null } : {}),
-          ...(imageUrl !== undefined ? { imageUrl: imageUrl ?? null } : {}),
-          ...(imagePublicId !== undefined ? { imagePublicId: imagePublicId ?? null } : {}),
+          ...(imageUrl !== undefined || primaryImage
+            ? { imageUrl: primaryImage?.url ?? imageUrl ?? null }
+            : {}),
+          ...(imagePublicId !== undefined || primaryImage
+            ? { imagePublicId: primaryImage?.publicId ?? imagePublicId ?? null }
+            : {}),
+          ...(normalizedImages
+            ? {
+                images: {
+                  deleteMany: {},
+                  create: normalizedImages.map((img: any) => ({
+                    url: img.url,
+                    publicId: img.publicId,
+                  })),
+                },
+              }
+            : {}),
           ...(genericIds !== undefined
             ? {
                 genericSubjects: {
@@ -166,6 +195,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (!exists) return res.status(404).json({ error: "Transaction not found" });
 
       await prisma.$transaction([
+        prisma.transactionImage.deleteMany({ where: { summaryTransactionId: id } }),
         prisma.summaryTransactionGenericSubject.deleteMany({ where: { summaryTransactionId: id } }),
         prisma.summaryTransactionSpecificTag.deleteMany({ where: { summaryTransactionId: id } }),
         prisma.summaryTransaction.delete({ where: { id } }),
