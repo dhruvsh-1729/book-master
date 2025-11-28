@@ -102,8 +102,6 @@ const BOOK_OVERVIEW_FIELDS = [
   { key: "edition", label: "Edition" },
   { key: "publisherName", label: "Publisher Name" },
   { key: "editors", label: "Editors" },
-  { key: "coverImageUrl", label: "Cover Image" },
-  { key: "bookImages", label: "Book Images" },
 ] as const;
 
 const EXPORT_VARIANTS = {
@@ -228,22 +226,6 @@ const joinMultiValues = (values: (string | null | undefined)[]) =>
     .filter(Boolean)
     .map((v) => String(v))
     .join("; ");
-
-const collectImageUrls = (
-  primary?: string | null,
-  list?: Array<{ url?: string | null } | null>
-): string[] => {
-  const urls = new Set<string>();
-  if (truthy(primary)) urls.add(String(primary).trim());
-  (list || []).forEach((img) => {
-    if (img?.url && truthy(img.url)) {
-      urls.add(String(img.url).trim());
-    }
-  });
-  return Array.from(urls);
-};
-
-const formatImageCell = (urls: string[]) => (urls.length ? escapeCsv(urls.join("; ")) : "");
 
 const formatEditors = (editors?: Array<{ name?: string | null; role?: string | null } | null>) => {
   if (!editors || !editors.length) return "";
@@ -1062,7 +1044,7 @@ async function handleExport(req: NextApiRequest, res: NextApiResponse, userId: s
 
   const book = await prisma.bookMaster.findFirst({
     where: { id: bookId, userId },
-    include: { images: true, editor: true },
+    include: { editor: true },
   });
   if (!book) return res.status(404).json({ error: "Book not found" });
 
@@ -1082,7 +1064,6 @@ async function handleExport(req: NextApiRequest, res: NextApiResponse, userId: s
     include: {
       genericSubjects: { include: { genericSubject: true } },
       specificSubjects: { include: { tag: true } },
-      images: true,
     },
     orderBy: [{ srNo: "asc" }, { createdAt: "asc" }],
   });
@@ -1090,11 +1071,8 @@ async function handleExport(req: NextApiRequest, res: NextApiResponse, userId: s
   const rows: string[][] = [];
 
   if (variant === EXPORT_VARIANTS.BOOK_OVERVIEW) {
-    const bookImages = collectImageUrls((book as any)?.coverImageUrl, (book as any)?.images);
     const bookHeaderRow = BOOK_OVERVIEW_FIELDS.map((field) => field.label);
     const bookValueRow = BOOK_OVERVIEW_FIELDS.map((field) => {
-      if (field.key === "bookImages") return formatImageCell(bookImages);
-      if (field.key === "coverImageUrl") return escapeCsv((book as any).coverImageUrl ?? "");
       if (field.key === "editors") return formatEditors((book as any).editor);
       return escapeCsv((book as any)[field.key] ?? "");
     });
@@ -1114,7 +1092,6 @@ async function handleExport(req: NextApiRequest, res: NextApiResponse, userId: s
       const specificCategories = (tx.specificSubjects || [])
         .map((link: any) => link.tag?.category ?? null)
         .filter(Boolean);
-      const imageUrls = collectImageUrls((tx as any).imageUrl, (tx as any).images);
 
       const hasTitle = truthy(tx.title);
       const hasSpecific = specificNames.length > 0;
@@ -1126,7 +1103,6 @@ async function handleExport(req: NextApiRequest, res: NextApiResponse, userId: s
         if (col.key === "genericSubjectName") return escapeCsv(joinMultiValues(genericNames));
         if (col.key === "specificTagName") return escapeCsv(joinMultiValues(specificNames));
         if (col.key === "tagCategory") return escapeCsv(joinMultiValues(specificCategories));
-        if (col.key === "images") return formatImageCell(imageUrls);
         if (col.key === "itemRemark") return escapeCsv(tx.remark ?? "");
         if (col.key === "footNote") return escapeCsv(tx.footNote ?? "");
         if (col.key === "relevantParagraph") {
