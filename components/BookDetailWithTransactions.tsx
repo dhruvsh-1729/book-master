@@ -400,7 +400,7 @@ const BookDetailWithTransactions: React.FC<BookDetailWithTransactionsProps> = ({
           loading={bookLoading || transactionsLoading}
           searchable
           onSearch={handleSearch}
-          searchPlaceholder="Search transactions..."
+          searchPlaceholder="Search by title..."
           rowClickable
           onRowClick={handleRowClick}
           onEdit={handleEditTransaction}
