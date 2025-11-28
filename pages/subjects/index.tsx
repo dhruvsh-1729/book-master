@@ -94,8 +94,8 @@ const SubjectsPage: React.FC = () => {
     { key: 'description', label: 'Description' },
     {
       key: '_count',
-      label: 'Usage',
-      render: (value: any) => `${value?.summaryTransactions || 0} transactions`
+      label: 'Usage (transactions only)',
+      render: (value: any) => `${value?.summaryTransactions || 0}`
     }
   ];
 
@@ -105,8 +105,8 @@ const SubjectsPage: React.FC = () => {
     { key: 'description', label: 'Description' },
     {
       key: '_count',
-      label: 'Usage',
-      render: (value: any) => `${value?.summaryTransactions || 0} transactions`
+      label: 'Usage (transactions only)',
+      render: (value: any) => `${value?.summaryTransactions || 0}`
     }
   ];
 
