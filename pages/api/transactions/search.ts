@@ -269,7 +269,22 @@ async function handlePost(req: NextApiRequest, res: NextApiResponse) {
 
   // Build final where clause (only subject-based filters)
   const whereClause: Prisma.SummaryTransactionWhereInput =
-    andConditions.length > 0 ? { AND: andConditions } : {};
+    andConditions.length > 0
+      ? {
+          AND: andConditions,
+          // Require either a title or at least one specific subject
+          OR: [
+            { title: { not: null } },
+            { specificSubjects: { some: {} } },
+          ],
+        }
+      : {
+          AND: [{ userId }],
+          OR: [
+            { title: { not: null } },
+            { specificSubjects: { some: {} } },
+          ],
+        };
     const skip = (page - 1) * pageSize;
 
     // Validate sortBy field
