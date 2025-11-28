@@ -217,6 +217,7 @@ export interface DataTableProps<T = any> {
   onEdit?: (row: T) => void;
   onDelete?: (row: T) => void;
   onView?: (row: T) => void;
+  renderActions?: (row: T) => React.ReactNode;
   onRowClick?: (row: T) => void;
   rowClickable?: boolean;
   searchable?: boolean;

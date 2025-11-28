@@ -74,7 +74,25 @@ const COLS = {
 
 const TRANSACTION_CONCURRENCY = 8;
 
-const BOOK_INFO_FIELDS = [
+const EXPORT_HEADERS = [
+  { key: "srNo", label: "Sr No", source: "transaction" },
+  { key: "genericSubjectName", label: "Generic Subject", source: "transaction-extra" },
+  { key: "specificTagName", label: "Specific Subject", source: "transaction-extra" },
+  { key: "tagCategory", label: "Specific Category", source: "transaction-extra" },
+  { key: "title", label: "Title", source: "transaction" },
+  { key: "keywords", label: "Keywords", source: "transaction" },
+  { key: "images", label: "Images", source: "transaction" },
+  { key: "relevantParagraph", label: "Relevant Paragraph", source: "transaction" },
+  { key: "footNote", label: "Footnote", source: "transaction" },
+  { key: "paragraphNo", label: "Paragraph No", source: "transaction" },
+  { key: "pageNo", label: "Page No", source: "transaction" },
+  { key: "informationRating", label: "Information Rating", source: "transaction" },
+  { key: "itemRemark", label: "Txn Remark", source: "transaction" },
+  { key: "summary", label: "Summary", source: "transaction" },
+  { key: "conclusion", label: "Conclusion", source: "transaction" },
+];
+
+const BOOK_OVERVIEW_FIELDS = [
   { key: "libraryNumber", label: "Library Number" },
   { key: "bookName", label: "Book Name" },
   { key: "bookSummary", label: "Book Summary" },
@@ -83,24 +101,15 @@ const BOOK_INFO_FIELDS = [
   { key: "remark", label: "Book Remark" },
   { key: "edition", label: "Edition" },
   { key: "publisherName", label: "Publisher Name" },
-];
+  { key: "editors", label: "Editors" },
+  { key: "coverImageUrl", label: "Cover Image" },
+  { key: "bookImages", label: "Book Images" },
+] as const;
 
-const EXPORT_HEADERS = [
-  { key: "srNo", label: "Sr No", source: "transaction" },
-  { key: "genericSubjectName", label: "Generic Subject", source: "transaction-extra" },
-  { key: "specificTagName", label: "Specific Subject", source: "transaction-extra" },
-  { key: "tagCategory", label: "Specific Category", source: "transaction-extra" },
-  { key: "title", label: "Title", source: "transaction" },
-  { key: "keywords", label: "Keywords", source: "transaction" },
-  { key: "relevantParagraph", label: "Relevant Paragraph", source: "transaction" },
-  { key: "paragraphNo", label: "Paragraph No", source: "transaction" },
-  { key: "pageNo", label: "Page No", source: "transaction" },
-  { key: "informationRating", label: "Information Rating", source: "transaction" },
-  { key: "itemRemark", label: "Txn Remark", source: "transaction" },
-  { key: "summary", label: "Summary", source: "transaction" },
-  { key: "conclusion", label: "Conclusion", source: "transaction" },
-  { key: "footNote", label: "Footnote", source: "transaction" },
-];
+const EXPORT_VARIANTS = {
+  TRANSACTIONS: "transactions",
+  BOOK_OVERVIEW: "book-overview",
+} as const;
 
 const truthy = (v: unknown) => v !== undefined && v !== null && String(v).trim() !== "";
 
@@ -219,6 +228,35 @@ const joinMultiValues = (values: (string | null | undefined)[]) =>
     .filter(Boolean)
     .map((v) => String(v))
     .join("; ");
+
+const collectImageUrls = (
+  primary?: string | null,
+  list?: Array<{ url?: string | null } | null>
+): string[] => {
+  const urls = new Set<string>();
+  if (truthy(primary)) urls.add(String(primary).trim());
+  (list || []).forEach((img) => {
+    if (img?.url && truthy(img.url)) {
+      urls.add(String(img.url).trim());
+    }
+  });
+  return Array.from(urls);
+};
+
+const formatImageCell = (urls: string[]) => (urls.length ? escapeCsv(urls.join("; ")) : "");
+
+const formatEditors = (editors?: Array<{ name?: string | null; role?: string | null } | null>) => {
+  if (!editors || !editors.length) return "";
+  const parts = editors
+    .map((e) => {
+      const name = truthy(e?.name) ? String(e?.name).trim() : "";
+      const role = truthy(e?.role) ? String(e?.role).trim() : "";
+      if (!name) return null;
+      return role ? `${name} (${role})` : name;
+    })
+    .filter(Boolean);
+  return escapeCsv(parts.join("; "));
+};
 
 async function runWithConcurrency<T>(items: T[], limit: number, worker: (item: T) => Promise<void>) {
   if (!items.length) return;
@@ -1012,11 +1050,20 @@ async function handleExport(req: NextApiRequest, res: NextApiResponse, userId: s
   const bookId = toStr(req.query.bookId).trim();
   if (!bookId) return res.status(400).json({ error: "bookId is required" });
 
+  const variantParam = toStr(req.query.variant).trim().toLowerCase();
+  const variant =
+    variantParam === EXPORT_VARIANTS.BOOK_OVERVIEW
+      ? EXPORT_VARIANTS.BOOK_OVERVIEW
+      : EXPORT_VARIANTS.TRANSACTIONS;
+
   const genericSubjectId = toStr(req.query.genericSubjectId).trim();
   const specificSubjectId = toStr(req.query.specificSubjectId).trim();
   const search = toStr(req.query.search).trim();
 
-  const book = await prisma.bookMaster.findFirst({ where: { id: bookId, userId } });
+  const book = await prisma.bookMaster.findFirst({
+    where: { id: bookId, userId },
+    include: { images: true, editor: true },
+  });
   if (!book) return res.status(404).json({ error: "Book not found" });
 
   const where: any = { bookId, userId };
@@ -1035,21 +1082,29 @@ async function handleExport(req: NextApiRequest, res: NextApiResponse, userId: s
     include: {
       genericSubjects: { include: { genericSubject: true } },
       specificSubjects: { include: { tag: true } },
+      images: true,
     },
     orderBy: [{ srNo: "asc" }, { createdAt: "asc" }],
   });
 
   const rows: string[][] = [];
 
-  BOOK_INFO_FIELDS.forEach((field) => {
-    rows.push([field.label, escapeCsv((book as any)[field.key] ?? "")]);
-  });
+  if (variant === EXPORT_VARIANTS.BOOK_OVERVIEW) {
+    const bookImages = collectImageUrls((book as any)?.coverImageUrl, (book as any)?.images);
+    const bookHeaderRow = BOOK_OVERVIEW_FIELDS.map((field) => field.label);
+    const bookValueRow = BOOK_OVERVIEW_FIELDS.map((field) => {
+      if (field.key === "bookImages") return formatImageCell(bookImages);
+      if (field.key === "coverImageUrl") return escapeCsv((book as any).coverImageUrl ?? "");
+      if (field.key === "editors") return formatEditors((book as any).editor);
+      return escapeCsv((book as any)[field.key] ?? "");
+    });
+    rows.push(bookHeaderRow, bookValueRow, [], []);
+  }
 
-  rows.push([]);
   rows.push(EXPORT_HEADERS.map((col) => col.label));
 
-  if (transactions.length) {
-    transactions.forEach((tx) => {
+  const transactionRows = transactions
+    .map((tx) => {
       const genericNames = (tx.genericSubjects || [])
         .map((link: any) => link.genericSubject?.name ?? null)
         .filter(Boolean);
@@ -1059,11 +1114,19 @@ async function handleExport(req: NextApiRequest, res: NextApiResponse, userId: s
       const specificCategories = (tx.specificSubjects || [])
         .map((link: any) => link.tag?.category ?? null)
         .filter(Boolean);
+      const imageUrls = collectImageUrls((tx as any).imageUrl, (tx as any).images);
+
+      const hasTitle = truthy(tx.title);
+      const hasSpecific = specificNames.length > 0;
+      const includeInExport =
+        variant === EXPORT_VARIANTS.BOOK_OVERVIEW ? !hasTitle || !hasSpecific : hasTitle && hasSpecific;
+      if (!includeInExport) return null;
 
       const row = EXPORT_HEADERS.map((col) => {
         if (col.key === "genericSubjectName") return escapeCsv(joinMultiValues(genericNames));
         if (col.key === "specificTagName") return escapeCsv(joinMultiValues(specificNames));
         if (col.key === "tagCategory") return escapeCsv(joinMultiValues(specificCategories));
+        if (col.key === "images") return formatImageCell(imageUrls);
         if (col.key === "itemRemark") return escapeCsv(tx.remark ?? "");
         if (col.key === "footNote") return escapeCsv(tx.footNote ?? "");
         if (col.key === "relevantParagraph") {
@@ -1074,15 +1137,19 @@ async function handleExport(req: NextApiRequest, res: NextApiResponse, userId: s
         }
         return escapeCsv((tx as any)[col.key] ?? "");
       });
-      rows.push(row);
-    });
-  }
+      return row;
+    })
+    .filter(Boolean) as string[][];
+
+  rows.push(...transactionRows);
 
   const csv = rows.map((row) => row.join(",")).join("\n");
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader(
     "Content-Disposition",
-    `attachment; filename="book-export-${book.libraryNumber}.csv"`
+    `attachment; filename="${
+      variant === EXPORT_VARIANTS.BOOK_OVERVIEW ? "book-overview" : "transactions"
+    }-${book.libraryNumber}.csv"`
   );
   return res.status(200).send(`\uFEFF${csv}`);
 }

@@ -258,6 +258,15 @@ async function handlePost(req: NextApiRequest, res: NextApiResponse) {
         }
         return;
       }
+      if (filter.field === 'informationRating') {
+        const val = String(filter.value ?? '').trim();
+        if (val.toLowerCase() === 'null' || val === '') {
+          andConditions.push({ informationRating: null });
+        } else {
+          andConditions.push({ informationRating: val });
+        }
+        return;
+      }
       andConditions.push(buildFieldFilter(filter));
     });
   }

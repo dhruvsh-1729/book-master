@@ -187,8 +187,14 @@ export const ImageUploader: React.FC<ImageUploaderProps> = ({
       <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileChange} className="hidden" />
 
       {modalOpen && imageSrc && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
-          <div className="w-full max-w-3xl overflow-hidden rounded-xl bg-white shadow-2xl">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4"
+          onClick={() => setModalOpen(false)}
+        >
+          <div
+            className="w-full max-w-3xl overflow-hidden rounded-xl bg-white shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between border-b px-4 py-3">
               <div className="flex items-center gap-2 text-gray-800">
                 <CropIcon className="h-4 w-4" />

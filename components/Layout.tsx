@@ -394,9 +394,11 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     setExportState({ loading: true, error: '', success: '' });
     try {
       const params = new URLSearchParams();
+      params.append('variant', 'transactions');
       Object.entries(exportFilters).forEach(([key, value]) => {
         if (value) params.append(key, value);
       });
+      const selectedBook = exportOptions.books.find((book) => book.id === exportFilters.bookId);
       const response = await fetch(`/api/book-import?${params.toString()}`);
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
@@ -406,7 +408,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `book-export-${exportFilters.bookId}.csv`;
+      link.download = `transactions-${selectedBook?.libraryNumber || exportFilters.bookId}.csv`;
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -472,8 +474,11 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
       {/* Import Modal */}
       {showImportModal && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-auto">
+        <div
+          className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50 flex items-center justify-center p-4"
+          onClick={resetImportModal}
+        >
+          <div className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-auto" onClick={(e) => e.stopPropagation()}>
             <div className="px-6 py-4 border-b border-gray-200">
               <h3 className="text-lg leading-6 font-medium text-gray-900">Import Book & Summary Transactions</h3>
             </div>
@@ -656,10 +661,16 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
       {/* Export Modal */}
       {showExportModal && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-auto">
+        <div
+          className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50 flex items-center justify-center p-4"
+          onClick={closeExportModal}
+        >
+          <div className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-auto" onClick={(e) => e.stopPropagation()}>
             <div className="px-6 py-4 border-b border-gray-200">
-              <h3 className="text-lg leading-6 font-medium text-gray-900">Export Book & Summary Transactions</h3>
+              <h3 className="text-lg leading-6 font-medium text-gray-900">Export Transactions</h3>
+              <p className="text-sm text-gray-500 mt-1">
+                Only transactions with a title and at least one specific subject are exported. Book details are excluded.
+              </p>
             </div>
             <div className="px-6 py-4 space-y-4">
               {exportState.error && <Alert type="error" message={exportState.error} onClose={() => setExportState((prev) => ({ ...prev, error: '' }))} />}
@@ -713,7 +724,9 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                     placeholder="Optional text filter"
                   />
 
-                  <p className="text-sm text-gray-600">Exports match the import template exactly. You can immediately re-import the downloaded file after editing.</p>
+                  <p className="text-sm text-gray-600">
+                    Footnotes sit after the relevant paragraph column and image URLs are included on each transaction row. Transactions missing a title or a specific subject are skipped here and can be exported from each book&rsquo;s overview instead.
+                  </p>
                 </>
               )}
             </div>

@@ -21,6 +21,7 @@ export const DataTable = <T extends { id: string }>({
   onEdit,
   onDelete,
   onView,
+  renderActions,
   onRowClick,
   rowClickable = false,
   searchable = false,
@@ -30,7 +31,7 @@ export const DataTable = <T extends { id: string }>({
   actionBusyMessage = 'Processing...',
 }: DataTableProps<T>) => {
   const [searchTerm, setSearchTerm] = useState<string>('');
-  const hasActions = Boolean(onView || onEdit || onDelete);
+  const hasActions = Boolean(onView || onEdit || onDelete || renderActions);
 
   const handleSearch = (value: string) => {
     setSearchTerm(value);
@@ -98,6 +99,14 @@ export const DataTable = <T extends { id: string }>({
                     ))}
                     {hasActions && (
                       <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
+                        {renderActions && (
+                          <span
+                            className="inline-flex items-center gap-2 align-middle"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {renderActions(row)}
+                          </span>
+                        )}
                         {onView && (
                           <button
                             onClick={(e) => {

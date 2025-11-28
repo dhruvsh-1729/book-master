@@ -1,6 +1,6 @@
 // components/BookMasterList.tsx
 import React, { useState, useEffect } from 'react';
-import { Book, Plus, FileText, Tag as TagIcon } from 'lucide-react';
+import { Book, Plus, FileText, Tag as TagIcon, Download } from 'lucide-react';
 import {
   DataTable,
   Modal,
@@ -43,6 +43,10 @@ const BookMasterList: React.FC = () => {
     totalGenericSubjects: 0,
     totalSpecificTags: 0,
   });
+  const [exportBook, setExportBook] = useState<BookMaster | null>(null);
+  const [showBookExportModal, setShowBookExportModal] = useState(false);
+  const [bookExporting, setBookExporting] = useState(false);
+  const [bookExportError, setBookExportError] = useState<string | null>(null);
 
   const fetchBooks = async (page = 1, search = '') => {
     setLoading(true);
@@ -121,6 +125,58 @@ const BookMasterList: React.FC = () => {
     }
   };
 
+  const getBookImageUrls = (bookNode?: BookMaster | null) => {
+    if (!bookNode) return [];
+    const urls = new Set<string>();
+    if (bookNode.coverImageUrl) urls.add(bookNode.coverImageUrl);
+    (bookNode.images || []).forEach((img) => {
+      if (img?.url) urls.add(img.url);
+    });
+    return Array.from(urls);
+  };
+
+  const openBookExportModal = (book: BookMaster) => {
+    setExportBook(book);
+    setBookExportError(null);
+    setShowBookExportModal(true);
+  };
+
+  const closeBookExportModal = () => {
+    setShowBookExportModal(false);
+    setExportBook(null);
+    setBookExportError(null);
+    setBookExporting(false);
+  };
+
+  const triggerBookExport = async () => {
+    if (!exportBook) return;
+    setBookExporting(true);
+    setBookExportError(null);
+    try {
+      const params = new URLSearchParams({ bookId: exportBook.id, variant: 'book-overview' });
+      const res = await fetch(`/api/book-import?${params.toString()}`);
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.error || 'Export failed');
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      const safeName = (exportBook.libraryNumber || exportBook.bookName || exportBook.id).replace(/\s+/g, '-');
+      link.href = url;
+      link.download = `book-overview-${safeName}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      setAlert({ type: 'success', message: 'Book overview export is ready.' });
+    } catch (error: any) {
+      setBookExportError(error?.message || 'Export failed');
+    } finally {
+      setBookExporting(false);
+    }
+  };
+
   const columns: DataTableColumn<BookMaster>[] = [
     {
       key: 'coverImageUrl',
@@ -195,6 +251,17 @@ const BookMasterList: React.FC = () => {
           onView={handleViewBook}
           onEdit={handleEditBook}
           onDelete={handleDeleteBook}
+          renderActions={(row) => (
+            <button
+              type="button"
+              onClick={() => openBookExportModal(row)}
+              className="inline-flex items-center gap-1 rounded-md bg-green-50 px-2 py-1 text-xs font-semibold text-green-700 hover:bg-green-100 disabled:opacity-60"
+              disabled={bookExporting}
+            >
+              <Download className="h-3.5 w-3.5" />
+              Export
+            </button>
+          )}
           actionBusyRowId={deleteInProgressId}
           actionBusyMessage="Deleting..."
           searchable
@@ -276,6 +343,113 @@ const BookMasterList: React.FC = () => {
                 setSelectedBook(null);
               }}
             />
+          </div>
+        </div>
+      )}
+
+      {/* Book Overview / Export */}
+      {showBookExportModal && exportBook && (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+          <div className="fixed inset-0 bg-black bg-opacity-50" onClick={closeBookExportModal} />
+          <div className="relative max-w-5xl mx-auto my-8 p-6 bg-white rounded-lg shadow-xl">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <p className="text-xs uppercase tracking-wide text-gray-500">Book Export</p>
+                <h3 className="text-lg font-semibold text-gray-900">{exportBook.bookName}</h3>
+                <p className="text-sm text-gray-500">Library #{exportBook.libraryNumber}</p>
+              </div>
+              <button className="text-gray-400 hover:text-gray-600" onClick={closeBookExportModal}>
+                <span className="sr-only">Close</span>×
+              </button>
+            </div>
+
+            {bookExportError && (
+              <div className="mb-3">
+                <Alert type="error" message={bookExportError} onClose={() => setBookExportError(null)} />
+              </div>
+            )}
+
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {[
+                  { label: 'Grade', value: exportBook.grade || '—' },
+                  { label: 'Pages', value: exportBook.pageNumbers || '—' },
+                  { label: 'Publisher', value: exportBook.publisherName || '—' },
+                  { label: 'Edition', value: exportBook.edition || '—' },
+                  { label: 'Remark', value: exportBook.remark || '—' },
+                  { label: 'Last Updated', value: new Date(exportBook.updatedAt).toLocaleDateString() },
+                ].map((item) => (
+                  <div key={item.label} className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                    <p className="text-xs font-medium text-gray-500">{item.label}</p>
+                    <p className="text-sm font-semibold text-gray-800">{item.value}</p>
+                  </div>
+                ))}
+              </div>
+
+              <div>
+                <p className="text-xs uppercase font-semibold text-gray-600 mb-2">Book Summary</p>
+                <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800 min-h-[64px]">
+                  {exportBook.bookSummary || 'No summary provided.'}
+                </div>
+              </div>
+
+              <div>
+                <p className="text-xs uppercase font-semibold text-gray-600 mb-2">Editors</p>
+                {exportBook.editors && exportBook.editors.length ? (
+                  <div className="flex flex-wrap gap-2">
+                    {exportBook.editors.map((editor, idx) => (
+                      <span
+                        key={`${editor.id || editor.name || idx}`}
+                        className="inline-flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-800"
+                      >
+                        {editor.name || 'Unnamed'}
+                        {editor.role && <span className="text-indigo-600">({editor.role})</span>}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-500">No editors listed for this book.</p>
+                )}
+              </div>
+
+              <div>
+                <p className="text-xs uppercase font-semibold text-gray-600 mb-2">Images</p>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  {getBookImageUrls(exportBook).length ? (
+                    getBookImageUrls(exportBook).map((img, idx) => (
+                      <div key={`${img}-${idx}`} className="rounded-lg overflow-hidden border border-gray-200 bg-gray-50">
+                        <img src={img} alt={`Book visual ${idx + 1}`} className="h-32 w-full object-cover" />
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-sm text-gray-500 col-span-full">No images attached to this book.</p>
+                  )}
+                </div>
+              </div>
+
+              <p className="text-xs text-gray-500">
+                Export starts with a single overview row (including editors and image links), then two spacer rows,
+                followed by only those transactions missing a title or a specific subject. Footnotes and all image URLs are kept on the same row.
+              </p>
+            </div>
+
+            <div className="mt-6 flex items-center justify-end space-x-3 border-t border-gray-200 pt-4">
+              <button
+                className="px-4 py-2 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                onClick={closeBookExportModal}
+                disabled={bookExporting}
+              >
+                Close
+              </button>
+              <button
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-md text-sm font-semibold text-white bg-green-600 hover:bg-green-700 disabled:opacity-60"
+                onClick={triggerBookExport}
+                disabled={bookExporting}
+              >
+                <Download className="h-4 w-4" />
+                {bookExporting ? 'Preparing...' : 'Export Overview CSV'}
+              </button>
+            </div>
           </div>
         </div>
       )}

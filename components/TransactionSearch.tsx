@@ -359,6 +359,11 @@ export default function TransactionSearch({ initialFilterOptions }: TransactionS
     setter(values);
   };
 
+  const closeDetailModal = () => {
+    setDetailOpen(false);
+    setActiveTx(null);
+  };
+
   return (
     <div className="w-full space-y-4">
       {/* Header */}
@@ -837,18 +842,18 @@ export default function TransactionSearch({ initialFilterOptions }: TransactionS
 
       {/* Detail Modal */}
       {detailOpen && activeTx && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
-          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4" onClick={closeDetailModal}>
+          <div
+            className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between border-b px-4 py-3">
               <div>
                 <p className="text-xs text-gray-500">Transaction #{activeTx.srNo}</p>
                 <p className="text-base font-semibold text-gray-800 truncate">{activeTx.title || 'Untitled'}</p>
               </div>
               <button
-                onClick={() => {
-                  setDetailOpen(false);
-                  setActiveTx(null);
-                }}
+                onClick={closeDetailModal}
                 className="p-2 rounded-full text-gray-500 hover:bg-gray-100"
               >
                 <X className="h-4 w-4" />
