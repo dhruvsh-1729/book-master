@@ -26,6 +26,8 @@ export const DataTable = <T extends { id: string }>({
   searchable = false,
   onSearch,
   searchPlaceholder = 'Search...',
+  actionBusyRowId,
+  actionBusyMessage = 'Processing...',
 }: DataTableProps<T>) => {
   const [searchTerm, setSearchTerm] = useState<string>('');
   const hasActions = Boolean(onView || onEdit || onDelete);
@@ -79,61 +81,74 @@ export const DataTable = <T extends { id: string }>({
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {data?.map((row) => (
-                <tr
-                  key={row.id}
-                  className={`hover:bg-gray-50 ${onRowClick || rowClickable ? 'cursor-pointer hover:bg-blue-50/50' : ''}`}
-                  onClick={() => onRowClick?.(row)}
-                >
-                  {columns.map((column) => (
-                    <td key={String(column.key)} className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {column.render
-                        ? column.render((row as any)[column.key], row)
-                        : String((row as any)[column.key] ?? '')}
-                    </td>
-                  ))}
-                  {hasActions && (
-                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
-                      {onView && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onView(row);
-                          }}
-                          className="text-blue-600 hover:text-blue-900"
-                          title="View"
-                        >
-                          <Eye className="h-4 w-4" />
-                        </button>
-                      )}
-                      {onEdit && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onEdit(row);
-                          }}
-                          className="text-indigo-600 hover:text-indigo-900"
-                          title="Edit"
-                        >
-                          <Edit className="h-4 w-4" />
-                        </button>
-                      )}
-                      {onDelete && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onDelete(row);
-                          }}
-                          className="text-red-600 hover:text-red-900"
-                          title="Delete"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      )}
-                    </td>
-                  )}
-                </tr>
-              ))}
+              {data?.map((row) => {
+                const isBusyRow = actionBusyRowId === row.id;
+                return (
+                  <tr
+                    key={row.id}
+                    className={`hover:bg-gray-50 ${onRowClick || rowClickable ? 'cursor-pointer hover:bg-blue-50/50' : ''}`}
+                    onClick={() => onRowClick?.(row)}
+                  >
+                    {columns.map((column) => (
+                      <td key={String(column.key)} className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {column.render
+                          ? column.render((row as any)[column.key], row)
+                          : String((row as any)[column.key] ?? '')}
+                      </td>
+                    ))}
+                    {hasActions && (
+                      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
+                        {onView && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onView(row);
+                            }}
+                            className="text-blue-600 hover:text-blue-900 disabled:opacity-40 disabled:cursor-not-allowed"
+                            disabled={isBusyRow}
+                            title="View"
+                          >
+                            <Eye className="h-4 w-4" />
+                          </button>
+                        )}
+                        {onEdit && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onEdit(row);
+                            }}
+                            className="text-indigo-600 hover:text-indigo-900 disabled:opacity-40 disabled:cursor-not-allowed"
+                            disabled={isBusyRow}
+                            title="Edit"
+                          >
+                            <Edit className="h-4 w-4" />
+                          </button>
+                        )}
+                        {onDelete && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onDelete(row);
+                            }}
+                            className="text-red-600 hover:text-red-900 disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-2"
+                            disabled={isBusyRow}
+                            title="Delete"
+                          >
+                            {isBusyRow ? (
+                              <span className="inline-flex items-center gap-2 text-xs font-medium">
+                                <LoadingSpinner size="sm" colorClass="border-current" />
+                                <span>{actionBusyMessage}</span>
+                              </span>
+                            ) : (
+                              <Trash2 className="h-4 w-4" />
+                            )}
+                          </button>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -391,7 +406,7 @@ export const StatsCard: React.FC<StatsCardProps> = ({ title, value, icon: Icon, 
   );
 };
 
-export const LoadingSpinner: React.FC<{ size?: 'sm' | 'md' | 'lg'; className?: string }> = ({ size = 'md', className = '' }) => {
+export const LoadingSpinner: React.FC<{ size?: 'sm' | 'md' | 'lg'; className?: string; colorClass?: string }> = ({ size = 'md', className = '', colorClass = 'border-blue-600' }) => {
   const s = { sm: 'h-4 w-4', md: 'h-8 w-8', lg: 'h-12 w-12' }[size];
-  return <div className={`animate-spin rounded-full border-b-2 border-blue-600 ${s} ${className}`} />;
+  return <div className={`animate-spin rounded-full border-b-2 ${colorClass} ${s} ${className}`} />;
 };

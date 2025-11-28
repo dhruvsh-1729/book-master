@@ -286,7 +286,7 @@ const AdminPage: React.FC = () => {
                 <div className="p-4 space-y-3">
                   <div className="flex items-center gap-2 text-green-700">
                     <Tag className="h-4 w-4" />
-                    <p className="text-xs font-semibold uppercase tracking-wide">Default Specific Tags</p>
+                    <p className="text-xs font-semibold uppercase tracking-wide">Default Specific Subjects</p>
                   </div>
                   <AsyncCreatableSelect
                     isMulti
@@ -305,7 +305,7 @@ const AdminPage: React.FC = () => {
                     styles={selectStyles}
                     className="text-sm"
                     classNamePrefix="react-select"
-                    placeholder="Search or create specific tags..."
+                    placeholder="Search or create specific subjects..."
                   />
                   <p className="text-xs text-gray-500">Search to find or create tags; selections auto-save.</p>
                 </div>

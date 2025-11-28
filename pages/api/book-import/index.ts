@@ -21,6 +21,15 @@ interface BookPayload {
 interface JobImportCaches {
   books: Map<string, Promise<BookRecord>>;
   transactionKeys: Map<string, Set<string>>;
+  genericSubjects: Map<string, Promise<{ id: string; name: string }>>;
+  specificTags: Map<string, Promise<{ id: string; name: string; category: string | null }>>;
+  transactionLookups: Map<
+    string,
+    {
+      bySrNo: Map<number, string>;
+      byTitle: Map<string, string>;
+    }
+  >;
 }
 
 const CSV_PARSE_OPTIONS = {
@@ -59,9 +68,11 @@ const COLS = {
   summary: ["summary", "Summary"],
   conclusion: ["conclusion", "Conclusion"],
   genericSubjectName: ["genericSubject", "Generic Subject", "Subject (Generic)"],
-  specificTagName: ["specificSubject", "Specific Subject", "Tag", "Specific Tag", "Specific"],
+  specificTagName: ["specificSubject", "Specific Subject", "Tag", "Specific"],
   tagCategory: ["category", "Tag Category", "Specific Category"],
 } as const;
+
+const TRANSACTION_CONCURRENCY = 8;
 
 const EXPORT_HEADERS = [
   { key: "libraryNumber", label: "Sr No.", source: "book" },
@@ -169,13 +180,6 @@ const pickCol = (row: Record<string, unknown>, aliases?: readonly string[]) => {
   return undefined;
 };
 
-const pickInt = (row: Record<string, any>, aliases?: readonly string[]) => {
-  const value = pickCol(row, aliases);
-  if (!truthy(value)) return undefined;
-  const parsed = parseInt(String(value).replace(/[^\d-]/g, ""), 10);
-  return Number.isFinite(parsed) ? parsed : undefined;
-};
-
 const maybeParseJSON = (value?: string) => {
   if (!truthy(value)) return null;
   const input = String(value).trim();
@@ -211,6 +215,21 @@ const joinMultiValues = (values: (string | null | undefined)[]) =>
     .filter(Boolean)
     .map((v) => String(v))
     .join("; ");
+
+async function runWithConcurrency<T>(items: T[], limit: number, worker: (item: T) => Promise<void>) {
+  if (!items.length) return;
+  const queue = [...items];
+  const size = Math.min(limit, queue.length);
+  const runners = Array.from({ length: size }, async () => {
+    while (queue.length) {
+      const next = queue.shift();
+      if (next) {
+        await worker(next);
+      }
+    }
+  });
+  await Promise.all(runners);
+}
 
 export const config = {
   api: {
@@ -274,9 +293,19 @@ async function startImportJob(req: NextApiRequest, res: NextApiResponse, userId:
     preparedFiles.map((file) => ({ fileName: file.fileName, fileType: file.fileType }))
   );
 
-  setImmediate(() => processImportJob(job.id, userId, preparedFiles, body.bookName));
+  try {
+    // Kick off the import in the background so the client can subscribe to status updates.
+    processImportJob(job.id, userId, preparedFiles, body.bookName).catch((error: any) => {
+      const jobRef = importJobManager.getJob(job.id);
+      if (jobRef) {
+        importJobManager.completeJob(jobRef, "failed", error?.message || "Import failed");
+      }
+    });
 
-  return res.status(202).json({ jobId: job.id });
+    return res.status(202).json({ summary: job.summary });
+  } catch (error: any) {
+    return res.status(500).json({ error: error?.message || "Import failed" });
+  }
 }
 
 function normalizeIncomingFile(file: IncomingFilePayload): PreparedFile {
@@ -326,6 +355,9 @@ async function processImportJob(
   const jobCaches: JobImportCaches = {
     books: new Map(),
     transactionKeys: new Map(),
+    genericSubjects: new Map(),
+    specificTags: new Map(),
+    transactionLookups: new Map(),
   };
 
   // keep a global seen set to avoid duplicates across all files in same job
@@ -342,11 +374,12 @@ async function processImportJob(
     }
   } catch (error: any) {
     importJobManager.completeJob(job, "failed", error?.message || "Import failed");
-    return;
+    return job.summary;
   }
 
   const hasFailures = job.summary.files.some((file) => file.status === "failed");
   importJobManager.completeJob(job, hasFailures ? "failed" : "completed");
+  return job.summary;
 }
 
 async function processSingleFile(
@@ -546,7 +579,7 @@ async function importFromRecords(
     libraryNumber: String(libraryNumber).trim(),
     bookName: String(bookName).trim(),
     bookSummary: pickCol(first, COLS.bookSummary)?.trim() || null,
-    pageNumbers: pickCol(first, COLS.pageNumbers)?.trim() || null,
+    pageNumbers: pickCol(first, COLS.pageNo)?.trim() || null,
     grade: pickCol(first, COLS.grade)?.trim() || null,
     remark: pickCol(first, COLS.remark)?.trim() || null,
     edition: pickCol(first, COLS.edition)?.trim() || null,
@@ -561,85 +594,63 @@ async function importFromRecords(
     caches.transactionKeys.set(bookTransactionKey, jobTransactionKeys);
   }
 
-  let lastTitle = "";
-  let lastGeneric: string[] = [];
-  let lastSpecific: string[] = [];
   const seenRowKeys = new Set<string>();
+  const lookup = await getTransactionLookup(book.id, userId, caches);
+  let nextAutoSrNo = 1;
+  lookup.bySrNo.forEach((_id, key) => {
+    if (typeof key === "number" && Number.isFinite(key)) {
+      nextAutoSrNo = Math.max(nextAutoSrNo, key + 1);
+    }
+  });
+  const transactionTasks: Array<{
+    rowIndex: number;
+    srNoValue: number;
+    rowTitle: string;
+    hasUserSrNo: boolean;
+    hasUserTitle: boolean;
+    genericNames: string[];
+    specificNames: string[];
+    tagCategory: string | null;
+    keywords: string | null;
+    relevantParagraph: any;
+    paragraphNo: any;
+    pageNo: any;
+    informationRating: any;
+    itemRemark: any;
+    summary: any;
+    conclusion: any;
+  }> = [];
 
   for (let i = 1; i < records.length; i++) {
     const row = records[i];
     const rowIndex = i + 1;
+    const hasUserSrNo = false;
+    const baseSrNo = nextAutoSrNo++;
 
-    const srNo = pickInt(row, COLS.srNo);
-    const validationFields: string[] = [];
-    const validationMessages: string[] = [];
+    const rawTitle = pickCol(row, COLS.title);
+    const hasUserTitle = truthy(rawTitle);
+    const rowTitle = hasUserTitle ? String(rawTitle) : "-";
 
-    if (srNo === undefined || !Number.isFinite(srNo)) {
-      validationFields.push("srNo");
-      validationMessages.push("Serial number missing or invalid");
+    const genericNames = splitMultiValues(pickCol(row, COLS.genericSubjectName));
+    const specificNames = splitMultiValues(pickCol(row, COLS.specificTagName));
+
+    const normalizedTitleKey = normalizeText(rowTitle);
+    const keyLabel = normalizedTitleKey || `row-${rowIndex}`;
+
+    let srNoValue = baseSrNo;
+    let dedupeKey = `${srNoValue}::${keyLabel}`;
+    const hasConflict = () =>
+      seenRowKeys.has(dedupeKey) ||
+      jobTransactionKeys.has(dedupeKey) ||
+      globalSeenKeys.has(dedupeKey) ||
+      lookup.bySrNo.has(srNoValue);
+
+    while (hasConflict()) {
+      srNoValue += 1;
+      dedupeKey = `${srNoValue}::${keyLabel}`;
     }
 
-    let title = pickCol(row, COLS.title);
-    if (truthy(title)) lastTitle = title as string;
-    else if (lastTitle) title = lastTitle;
-
-    let genericNames = splitMultiValues(pickCol(row, COLS.genericSubjectName));
-    if (genericNames.length) lastGeneric = genericNames;
-    else if (lastGeneric.length) genericNames = [...lastGeneric];
-
-    let specificNames = splitMultiValues(pickCol(row, COLS.specificTagName));
-    if (specificNames.length) lastSpecific = specificNames;
-    else if (lastSpecific.length) specificNames = [...lastSpecific];
-
-    if (!truthy(title)) {
-      validationFields.push("title");
-      validationMessages.push("Title is required (use carry-down or fill row)");
-    }
-
-    if (validationMessages.length) {
-      pushRowError(
-        job,
-        sheetSummary,
-        { rowIndex, message: validationMessages.join("; "), fields: validationFields },
-        fileName,
-        sheetName
-      );
-      continue;
-    }
-
-    const srNoValue = Number.isFinite(srNo) ? Number(srNo) : null;
-    const normalizedTitleKey = normalizeText(title || lastTitle || "");
-    const dedupeKey = `${srNoValue ?? "nosr"}::${normalizedTitleKey || `row-${rowIndex}`}`;
-
-    if (seenRowKeys.has(dedupeKey)) {
-      pushRowError(
-        job,
-        sheetSummary,
-        {
-          rowIndex,
-          message: "Duplicate row detected within the same sheet (matching Sr No./Title). Skipped.",
-          fields: ["srNo", "title"],
-        },
-        fileName,
-        sheetName
-      );
-      continue;
-    }
     seenRowKeys.add(dedupeKey);
-    if (jobTransactionKeys.has(dedupeKey) || globalSeenKeys.has(dedupeKey)) {
-      pushRowError(
-        job,
-        sheetSummary,
-        {
-          rowIndex,
-          message: "Duplicate row detected in another sheet/file (matching Sr No./Title). Skipped.",
-          fields: ["srNo", "title"],
-        },
-        fileName,
-        sheetName
-      );
-      continue;
-    }
     jobTransactionKeys.add(dedupeKey);
     globalSeenKeys.add(dedupeKey);
 
@@ -652,35 +663,57 @@ async function importFromRecords(
     const itemRemark = pickCol(row, COLS.itemRemark) ?? null;
     const summary = pickCol(row, COLS.summary) ?? null;
     const conclusion = pickCol(row, COLS.conclusion) ?? null;
-    const rowTitle = truthy(title) ? (title as string) : null;
+    transactionTasks.push({
+      rowIndex,
+      srNoValue,
+      rowTitle,
+      hasUserSrNo,
+      hasUserTitle,
+      genericNames,
+      specificNames,
+      tagCategory,
+      keywords,
+      relevantParagraph,
+      paragraphNo,
+      pageNo,
+      informationRating,
+      itemRemark,
+      summary,
+      conclusion,
+    });
+  }
+
+  await runWithConcurrency(transactionTasks, TRANSACTION_CONCURRENCY, async (task) => {
+    const {
+      rowIndex,
+      srNoValue,
+      rowTitle,
+      hasUserSrNo,
+      hasUserTitle,
+      genericNames,
+      specificNames,
+      tagCategory,
+      keywords,
+      relevantParagraph,
+      paragraphNo,
+      pageNo,
+      informationRating,
+      itemRemark,
+      summary,
+      conclusion,
+    } = task;
 
     try {
       const genericRecords = genericNames.length
-        ? await Promise.all(
-            genericNames.map((name) =>
-              prisma.genericSubjectMaster.upsert({
-                where: { name },
-                update: {},
-                create: { name },
-              })
-            )
-          )
+        ? await Promise.all(genericNames.map((name) => getGenericSubject(name, caches)))
         : [];
 
       const specificRecords = specificNames.length
-        ? await Promise.all(
-            specificNames.map((name) =>
-              prisma.tagMaster.upsert({
-                where: { name },
-                update: tagCategory ? { category: tagCategory } : {},
-                create: { name, category: tagCategory },
-              })
-            )
-          )
+        ? await Promise.all(specificNames.map((name) => getSpecificTag(name, tagCategory, caches)))
         : [];
 
       const transactionData = {
-        srNo: srNoValue ?? 0,
+        srNo: srNoValue,
         title: rowTitle,
         keywords,
         relevantParagraph: relevantParagraph ?? null,
@@ -694,20 +727,20 @@ async function importFromRecords(
         userId,
       };
 
-      let existingTransaction = null;
-      if (srNoValue !== null) {
-        existingTransaction = await prisma.summaryTransaction.findFirst({
-          where: { bookId: book.id, userId, srNo: srNoValue },
-        });
-      } else if (rowTitle) {
-        existingTransaction = await prisma.summaryTransaction.findFirst({
-          where: { bookId: book.id, userId, title: rowTitle },
-        });
+      const normalizedRowTitle = rowTitle ? normalizeText(rowTitle) : "";
+      let existingId: string | undefined;
+      if (hasUserSrNo && lookup.bySrNo.has(srNoValue)) {
+        existingId = lookup.bySrNo.get(srNoValue);
+      }
+      if (!existingId && hasUserTitle && normalizedRowTitle && lookup.byTitle.has(normalizedRowTitle)) {
+        existingId = lookup.byTitle.get(normalizedRowTitle);
       }
 
-      if (existingTransaction) {
+      const isUpdate = Boolean(existingId);
+
+      if (existingId) {
         await prisma.summaryTransaction.update({
-          where: { id: existingTransaction.id },
+          where: { id: existingId },
           data: {
             ...transactionData,
             genericSubjects: genericRecords.length
@@ -729,7 +762,7 @@ async function importFromRecords(
           },
         });
       } else {
-        await prisma.summaryTransaction.create({
+        const createdTx = await prisma.summaryTransaction.create({
           data: {
             ...transactionData,
             genericSubjects: genericRecords.length
@@ -748,10 +781,18 @@ async function importFromRecords(
               : undefined,
           },
         });
+        existingId = createdTx.id;
         sheetSummary.created += 1;
         importJobManager.updateSummary(job, (draft) => {
           draft.totalCreated += 1;
         });
+      }
+
+      if (existingId) {
+        lookup.bySrNo.set(srNoValue, existingId);
+        if (hasUserTitle && normalizedRowTitle) {
+          lookup.byTitle.set(normalizedRowTitle, existingId);
+        }
       }
 
       importJobManager.emit(job, {
@@ -761,7 +802,7 @@ async function importFromRecords(
           fileName,
           sheetName,
           rowIndex,
-          mode: existingTransaction ? "updated" : "created",
+          mode: isUpdate ? "updated" : "created",
         },
       });
     } catch (error: any) {
@@ -774,7 +815,7 @@ async function importFromRecords(
         sheetName
       );
     }
-  }
+  });
 }
 
 function addSheetSummary(
@@ -857,6 +898,112 @@ async function getOrCreateBookForJob(
   return promise;
 }
 
+async function getGenericSubject(name: string, caches: JobImportCaches) {
+  const trimmedName = name.trim();
+  const normalized = normalizeText(trimmedName) || trimmedName.toLowerCase();
+  let promise = caches.genericSubjects.get(normalized);
+  if (!promise) {
+    promise = (async () => {
+      const existing = await prisma.genericSubjectMaster.findFirst({
+        where: { name: { equals: trimmedName, mode: "insensitive" } },
+      });
+      if (existing) return existing;
+
+      try {
+        return await prisma.genericSubjectMaster.create({ data: { name: trimmedName } });
+      } catch (error: any) {
+        // On unique violation (race), return the existing record instead of failing the row.
+        const fallback = await prisma.genericSubjectMaster.findFirst({
+          where: { name: { equals: trimmedName, mode: "insensitive" } },
+        });
+        if (fallback) return fallback;
+        caches.genericSubjects.delete(normalized);
+        throw error;
+      }
+    })();
+    caches.genericSubjects.set(normalized, promise);
+  }
+  return promise;
+}
+
+async function getSpecificTag(name: string, category: string | null, caches: JobImportCaches) {
+  const trimmedName = name.trim();
+  const normalized = normalizeText(trimmedName) || trimmedName.toLowerCase();
+  let promise = caches.specificTags.get(normalized);
+  if (!promise) {
+    promise = (async () => {
+      const existing = await prisma.tagMaster.findFirst({
+        where: { name: { equals: trimmedName, mode: "insensitive" } },
+      });
+      if (existing) {
+        if (category && existing.category !== category) {
+          try {
+            return await prisma.tagMaster.update({
+              where: { id: existing.id },
+              data: { category },
+            });
+          } catch (error: any) {
+            const fallbackAfterUpdate = await prisma.tagMaster.findFirst({
+              where: { name: { equals: trimmedName, mode: "insensitive" } },
+            });
+            if (fallbackAfterUpdate) return fallbackAfterUpdate;
+            caches.specificTags.delete(normalized);
+            throw error;
+          }
+        }
+        return existing;
+      }
+
+      try {
+        return await prisma.tagMaster.create({ data: { name: trimmedName, category } });
+      } catch (error: any) {
+        // On unique violation (race), return the existing record instead of failing the row.
+        const fallback = await prisma.tagMaster.findFirst({
+          where: { name: { equals: trimmedName, mode: "insensitive" } },
+        });
+        if (fallback) {
+          if (category && fallback.category !== category) {
+            try {
+              return await prisma.tagMaster.update({
+                where: { id: fallback.id },
+                data: { category },
+              });
+            } catch {
+              return fallback;
+            }
+          }
+          return fallback;
+        }
+        caches.specificTags.delete(normalized);
+        throw error;
+      }
+    })();
+    caches.specificTags.set(normalized, promise);
+  }
+  return promise;
+}
+
+async function getTransactionLookup(bookId: string, userId: string, caches: JobImportCaches) {
+  let lookup = caches.transactionLookups.get(bookId);
+  if (!lookup) {
+    const existing = await prisma.summaryTransaction.findMany({
+      where: { bookId, userId },
+      select: { id: true, srNo: true, title: true },
+    });
+    lookup = { bySrNo: new Map(), byTitle: new Map() };
+    existing.forEach((tx) => {
+      if (typeof tx.srNo === "number") {
+        lookup!.bySrNo.set(tx.srNo, tx.id);
+      }
+      if (tx.title) {
+        lookup!.byTitle.set(normalizeText(tx.title), tx.id);
+      }
+    });
+    caches.transactionLookups.set(bookId, lookup);
+  }
+  return lookup;
+}
+
 async function handleExport(req: NextApiRequest, res: NextApiResponse, userId: string) {
   const bookId = toStr(req.query.bookId).trim();
   if (!bookId) return res.status(400).json({ error: "bookId is required" });
@@ -936,4 +1083,10 @@ async function handleExport(req: NextApiRequest, res: NextApiResponse, userId: s
     `attachment; filename="book-export-${book.libraryNumber}.csv"`
   );
   return res.status(200).send(`\uFEFF${csv}`);
+}
+function pickInt(row: Record<string, any>, aliases: readonly string[]): number | undefined {
+  const value = pickCol(row, aliases);
+  if (!truthy(value)) return undefined;
+  const parsed = parseInt(String(value).replace(/[^\d-]/g, ""), 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }

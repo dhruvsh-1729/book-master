@@ -38,7 +38,7 @@ const SubjectsPage: React.FC = () => {
       const data = await response.json();
       setSpecificTags(data.tags || []);
     } catch (error) {
-      console.error('Error fetching specific tags:', error);
+      console.error('Error fetching specific subjects:', error);
     }
   };
 
@@ -83,7 +83,7 @@ const SubjectsPage: React.FC = () => {
   };
 
   const handleDelete = async (item: GenericSubjectMaster | TagMaster) => {
-    const itemType = activeTab === 'generic' ? 'generic subject' : 'specific tag';
+    const itemType = activeTab === 'generic' ? 'generic subject' : 'specific subject';
     if (!confirm(`Are you sure you want to delete "${item.name}"?`)) {
       return;
     }
@@ -127,7 +127,7 @@ const SubjectsPage: React.FC = () => {
       });
 
       if (response.ok) {
-        const itemType = activeTab === 'generic' ? 'generic subject' : 'specific tag';
+        const itemType = activeTab === 'generic' ? 'generic subject' : 'specific subject';
         setAlert({ 
           type: 'success', 
           message: `${itemType} ${isEditing ? 'updated' : 'created'} successfully` 
@@ -244,7 +244,7 @@ const SubjectsPage: React.FC = () => {
               className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700"
             >
               <Plus className="h-4 w-4 mr-2" />
-              Add {activeTab === 'generic' ? 'Generic Subject' : 'Specific Tag'}
+              Add {activeTab === 'generic' ? 'Generic Subject' : 'Specific Subject'}
             </button>
           </div>
         }
@@ -285,7 +285,7 @@ const SubjectsPage: React.FC = () => {
                   : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
               }`}
             >
-              Specific Tags ({specificTags.length})
+              Specific Subjects ({specificTags.length})
             </button>
           </nav>
         </div>
@@ -327,7 +327,7 @@ const SubjectsPage: React.FC = () => {
           <div className="relative z-10 w-[70vw] mx-4 bg-white rounded-lg shadow-xl">
             <div className="flex items-center justify-between px-6 py-4 border-b">
               <h3 id="subject-modal-title" className="text-lg font-medium text-gray-900">
-                {`${editingItem ? 'Edit' : 'Add'} ${activeTab === 'generic' ? 'Generic Subject' : 'Specific Tag'}`}
+                {`${editingItem ? 'Edit' : 'Add'} ${activeTab === 'generic' ? 'Generic Subject' : 'Specific Subject'}`}
               </h3>
               <button
                 onClick={() => setShowModal(false)}

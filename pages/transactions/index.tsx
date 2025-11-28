@@ -246,12 +246,12 @@ const TransactionsPage: React.FC = () => {
             {value.length > 3 && <span className="text-[11px] text-blue-600">+{value.length - 3} more</span>}
           </div>
         ) : (
-          <span className="text-gray-400 text-xs">Not set</span>
+          <span className="text-gray-400 text-xs"></span>
         ),
     },
     {
       key: 'specificSubjects',
-      label: 'Specific Tags',
+      label: 'Specific Subjects',
       render: (value: TagMaster[] | undefined) =>
         value && value.length ? (
           <div className="flex flex-wrap gap-1">
@@ -263,7 +263,7 @@ const TransactionsPage: React.FC = () => {
             {value.length > 3 && <span className="text-[11px] text-green-600">+{value.length - 3} more</span>}
           </div>
         ) : (
-          <span className="text-gray-400 text-xs">Not set</span>
+          <span className="text-gray-400 text-xs"></span>
         ),
     },
     {
@@ -362,6 +362,8 @@ const TransactionsPage: React.FC = () => {
           rowClickable
           onRowClick={handleRowClick}
           onDelete={handleDeleteTransaction}
+          actionBusyRowId={deleteInProgressId}
+          actionBusyMessage="Deleting..."
         />
       </Card>
 
@@ -371,6 +373,7 @@ const TransactionsPage: React.FC = () => {
           mode="create"
           books={books}
           defaultBookId={filters.bookId}
+          nextSrNo={filters.bookId ? (pagination.total + 1) : undefined}
           onSubmit={handleCreateSubmit}
           onCancel={() => setShowCreateModal(false)}
         />

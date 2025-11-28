@@ -230,12 +230,12 @@ const BookDetailWithTransactions: React.FC<BookDetailWithTransactionsProps> = ({
             {value.length > 3 && <span className="text-[11px] text-blue-600">+{value.length - 3} more</span>}
           </div>
         ) : (
-          <span className="text-gray-400 text-xs">Not set</span>
+          <span className="text-gray-400 text-xs"></span>
         ),
     },
     {
       key: 'specificSubjects',
-      label: 'Specific Tags',
+      label: 'Specific Subjects',
       render: (value: TagMaster[] | undefined) =>
         value && value.length ? (
           <div className="flex flex-wrap gap-1">
@@ -247,7 +247,7 @@ const BookDetailWithTransactions: React.FC<BookDetailWithTransactionsProps> = ({
             {value.length > 3 && <span className="text-[11px] text-green-600">+{value.length - 3} more</span>}
           </div>
         ) : (
-          <span className="text-gray-400 text-xs">Not set</span>
+          <span className="text-gray-400 text-xs"></span>
         ),
     },
     {
@@ -405,6 +405,8 @@ const BookDetailWithTransactions: React.FC<BookDetailWithTransactionsProps> = ({
           onRowClick={handleRowClick}
           onEdit={handleEditTransaction}
           onDelete={handleDeleteTransaction}
+          actionBusyRowId={deleteInProgressId}
+          actionBusyMessage="Deleting..."
         />
       </Card>
 
@@ -414,6 +416,7 @@ const BookDetailWithTransactions: React.FC<BookDetailWithTransactionsProps> = ({
           mode="create"
           books={book ? [book] : []}
           defaultBookId={book?.id}
+          nextSrNo={(pagination?.total ?? transactions.length) + 1}
           onSubmit={handleCreateSubmit}
           onCancel={() => setShowCreateModal(false)}
           lockBookSelection

@@ -88,14 +88,11 @@ const arrayBufferToBase64 = (buffer: ArrayBuffer) => {
 // Main Layout Component
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const { user } = useAuth();
-  const importPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const lastSummaryRef = useRef<ImportJobSummary | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
   const [importState, setImportState] = useState({
     files: [] as SelectedUpload[],
-    jobId: '',
     uploading: false,
     status: 'idle' as ImportStatus,
     error: '',
@@ -121,6 +118,23 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const [optionsLoaded, setOptionsLoaded] = useState(false);
   const [optionsLoading, setOptionsLoading] = useState(false);
   const router = useRouter();
+  const importEventSourceRef = useRef<EventSource | null>(null);
+  const lastCreatedCountRef = useRef<number>(0);
+  const activeImportJobIdRef = useRef<string | null>(null);
+
+  const mapJobStatusToImportStatus = (status: ImportJobSummary['status']): ImportStatus => {
+    if (status === 'completed' || status === 'failed') return status;
+    return 'processing';
+  };
+
+  const closeImportStream = () => {
+    if (importEventSourceRef.current) {
+      importEventSourceRef.current.close();
+      importEventSourceRef.current = null;
+    }
+    activeImportJobIdRef.current = null;
+    lastCreatedCountRef.current = 0;
+  };
 
   const navigation: NavigationItem[] = [
     { name: 'Dashboard', href: '/', icon: Home },
@@ -164,100 +178,87 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     loadOptions();
   }, [showExportModal, optionsLoaded, optionsLoading]);
 
-  const cleanupImportPolling = () => {
-    if (importPollRef.current) {
-      clearInterval(importPollRef.current);
-      importPollRef.current = null;
-    }
-  };
-
-  useEffect(() => () => cleanupImportPolling(), []);
-
   const appendImportLog = (message: string) => {
     setImportState((prev) => {
       const nextLogs = [...prev.logs, { id: createLocalId(), timestamp: new Date().toISOString(), message }];
       return { ...prev, logs: nextLogs.slice(-200) };
     });
   };
-  const logSummaryDiff = (prev: ImportJobSummary | null, next: ImportJobSummary) => {
-    if (!prev || prev.status !== next.status) {
-      appendImportLog(`Status → ${next.status.toUpperCase()}`);
+
+  const startImportStatusStream = (jobId: string) => {
+    if (!jobId) return;
+
+    if (activeImportJobIdRef.current === jobId && importEventSourceRef.current) {
+      return;
     }
 
-    next.files.forEach((file) => {
-      const prevFile = prev?.files.find((f) => f.fileName === file.fileName);
-      if (!prevFile || prevFile.status !== file.status) {
-        appendImportLog(`File ${file.fileName}: ${file.status}`);
-      }
+    closeImportStream();
+    activeImportJobIdRef.current = jobId;
+    lastCreatedCountRef.current = importState.summary?.totalCreated ?? 0;
 
-      file.sheets.forEach((sheet) => {
-        const prevSheet = prevFile?.sheets.find((s) => s.name === sheet.name);
-        const countsChanged =
-          !prevSheet || prevSheet.created !== sheet.created || prevSheet.skipped !== sheet.skipped;
-        const errorChanged = sheet.error && sheet.error !== prevSheet?.error;
-        if (countsChanged || errorChanged) {
-          appendImportLog(
-            `Sheet ${sheet.name}: created ${sheet.created}, skipped ${sheet.skipped}${
-              sheet.error ? `, error: ${sheet.error}` : ''
-            }`
-          );
-        }
-      });
-    });
-  };
+    const source = new EventSource(`/api/book-import/status?jobId=${jobId}`);
+    importEventSourceRef.current = source;
 
-  const handleSummaryUpdate = (summary: ImportJobSummary) => {
-    logSummaryDiff(lastSummaryRef.current, summary);
-    lastSummaryRef.current = summary;
-    setImportState((prev) => ({
-      ...prev,
-      summary,
-      status:
-        summary.status === 'completed'
-          ? 'completed'
-          : summary.status === 'failed'
-          ? 'failed'
-          : 'processing',
-    }));
-
-    if (summary.status === 'completed' || summary.status === 'failed') {
-      cleanupImportPolling();
-      if (summary.status === 'failed') {
-        setImportState((prev) => ({
-          ...prev,
-          error: prev.error || 'Import failed. Review the logs for details.',
-        }));
-      }
-    }
-  };
-
-  const startImportStatusPolling = (jobId: string) => {
-    cleanupImportPolling();
-
-    const fetchSummary = async () => {
+    source.onmessage = (event) => {
       try {
-        const response = await fetch(`/api/book-import/jobs/${jobId}`);
-        const payload = await response.json().catch(() => null);
+        const payload = JSON.parse(event.data);
+        if (!payload?.type) return;
 
-        if (!response.ok || !payload) {
-          throw new Error(payload?.error || 'Failed to fetch import status');
+        if (payload.type === 'summary') {
+          const summary = payload.payload as ImportJobSummary;
+
+          setImportState((prev) => {
+            const nextState = {
+              ...prev,
+              summary,
+              status: mapJobStatusToImportStatus(summary.status),
+              uploading: false,
+            };
+            if (summary.status === 'failed' && !prev.error) {
+              nextState.error = 'Import failed. Check the errors below.';
+            }
+            return nextState;
+          });
+
+          if (typeof summary.totalCreated === 'number' && summary.totalCreated !== lastCreatedCountRef.current) {
+            appendImportLog(`Transactions created: ${summary.totalCreated}`);
+            lastCreatedCountRef.current = summary.totalCreated;
+          }
+
+          if (summary.status === 'completed') {
+            appendImportLog(`Import completed. Created ${summary.totalCreated}, skipped ${summary.totalSkipped}.`);
+            closeImportStream();
+          } else if (summary.status === 'failed') {
+            appendImportLog('Import failed. Review the errors for details.');
+            closeImportStream();
+          }
+          return;
         }
 
-        handleSummaryUpdate(payload as ImportJobSummary);
-      } catch (error: any) {
-        appendImportLog(`Status polling error: ${error?.message || error}`);
-        cleanupImportPolling();
-        setImportState((prev) => ({
-          ...prev,
-          status: prev.status === 'completed' ? prev.status : 'failed',
-          error: prev.error || 'Import status polling failed.',
-        }));
+        if (payload.type === 'file-error') {
+          appendImportLog(
+            `File error: ${payload.payload?.fileName || 'Unknown file'} – ${payload.payload?.message || 'Import failed'}`
+          );
+        } else if (payload.type === 'job-failed') {
+          appendImportLog('Import failed unexpectedly.');
+          closeImportStream();
+        }
+      } catch (error) {
+        console.error('Failed to parse import status event', error);
       }
     };
 
-    fetchSummary();
-    importPollRef.current = setInterval(fetchSummary, 2000);
+    source.onerror = () => {
+      appendImportLog('Live status connection lost. Will stop receiving updates.');
+      closeImportStream();
+    };
   };
+
+  useEffect(() => {
+    return () => {
+      closeImportStream();
+    };
+  }, []);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files ? Array.from(event.target.files) : [];
@@ -334,17 +335,29 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       const data = await response.json();
       if (!response.ok) throw new Error(data?.error || 'Failed to start import');
 
-      appendImportLog(`Job ${data.jobId} accepted. Processing will begin shortly.`);
+      const summary = data.summary as ImportJobSummary | undefined;
+      if (!summary?.jobId) {
+        throw new Error('Import started but the job could not be tracked.');
+      }
+
+      lastCreatedCountRef.current = summary.totalCreated ?? 0;
+      appendImportLog('Import started. Tracking transactions as they are created.');
       setImportState((prev) => ({
         ...prev,
         uploading: false,
-        status: 'processing',
-        jobId: data.jobId,
+        status: mapJobStatusToImportStatus(summary.status),
+        summary: summary ?? null,
+        error: '',
       }));
-      lastSummaryRef.current = null;
-      startImportStatusPolling(data.jobId);
+
+      startImportStatusStream(summary.jobId);
+
+      if (summary.status === 'completed' || summary.status === 'failed') {
+        appendImportLog(
+          `Import ${summary.status}. Created ${summary.totalCreated}, skipped ${summary.totalSkipped}.`
+        );
+      }
     } catch (error: any) {
-      cleanupImportPolling();
       setImportState((prev) => ({
         ...prev,
         uploading: false,
@@ -355,11 +368,9 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   };
 
   const resetImportModal = () => {
-    cleanupImportPolling();
-    lastSummaryRef.current = null;
+    closeImportStream();
     setImportState({
       files: [],
-      jobId: '',
       uploading: false,
       status: 'idle',
       error: '',
@@ -471,7 +482,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               {importState.summary && (
                 <Alert
                   type={importState.summary.status === 'completed' ? 'success' : 'warning'}
-                  message={`Job ${importState.summary.jobId} ${importState.summary.status}. Created ${importState.summary.totalCreated} record(s), skipped ${importState.summary.totalSkipped}.`}
+                  message={`Import ${importState.summary.status}. Created ${importState.summary.totalCreated} record(s), skipped ${importState.summary.totalSkipped}.`}
                   onClose={() => setImportState((prev) => ({ ...prev, summary: null }))}
                 />
               )}
@@ -509,8 +520,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               </div>
 
               <p className="text-sm text-gray-600">
-                Each file may contain one or many sheets. The first row should describe the book, and all subsequent rows are treated as summary transactions. Blank values in Title,
-                Generic Subject, or Specific Tag columns will automatically reuse the last non-empty value above them.
+                Each file may contain one or many sheets. The first row should describe the book, and all subsequent rows are treated as summary transactions.
               </p>
 
               <div className="border border-gray-200 rounded-md bg-gray-50 p-4 space-y-2">
@@ -531,6 +541,16 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                   >
                     {importState.status.toUpperCase()}
                   </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-sm text-gray-700">
+                  <div className="flex items-center justify-between bg-white border border-gray-200 rounded px-3 py-2">
+                    <span>Transactions created</span>
+                    <span className="font-semibold text-green-700">{importState.summary?.totalCreated ?? 0}</span>
+                  </div>
+                  <div className="flex items-center justify-between bg-white border border-gray-200 rounded px-3 py-2">
+                    <span>Rows skipped</span>
+                    <span className="font-semibold text-gray-700">{importState.summary?.totalSkipped ?? 0}</span>
+                  </div>
                 </div>
                 <div className="mt-2 max-h-48 overflow-y-auto text-xs font-mono space-y-1 bg-white border border-gray-200 rounded-md px-3 py-2">
                   {importState.logs.length === 0 && <p className="text-gray-500">Events will appear here once the import starts.</p>}
@@ -675,7 +695,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                       options={exportOptions.genericSubjects.map((subject) => ({ value: subject.id, label: subject.name }))}
                     />
                     <FormInput
-                      label="Specific Tag"
+                      label="Specific Subject"
                       name="specificSubjectId"
                       type="select"
                       value={exportFilters.specificSubjectId}

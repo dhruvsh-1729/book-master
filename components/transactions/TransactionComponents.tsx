@@ -102,6 +102,7 @@ export interface TransactionEditorFormProps {
   books: BookMaster[];
   defaultBookId?: string;
   initialData?: SummaryTransaction;
+  nextSrNo?: number;
   onSubmit: (payload: TransactionEditorValues) => Promise<void>;
   onCancel: () => void;
   lockBookSelection?: boolean;
@@ -112,13 +113,14 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
   books,
   defaultBookId,
   initialData,
+  nextSrNo,
   onSubmit,
   onCancel,
   lockBookSelection = false,
 }) => {
   const initialParagraph = normalizeParagraph(initialData?.relevantParagraph);
   const [formData, setFormData] = useState<TransactionEditorValues>({
-    srNo: initialData?.srNo ?? 1,
+    srNo: initialData?.srNo ?? nextSrNo ?? 1,
     genericSubjectIds: initialData?.genericSubjects?.map((subject) => subject.id) ?? [],
     specificSubjectIds: initialData?.specificSubjects?.map((tag) => tag.id) ?? [],
     title: initialData?.title || '',
@@ -139,6 +141,7 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [srNoTouched, setSrNoTouched] = useState(false);
   const [selectedGenerics, setSelectedGenerics] = useState<GenericSubjectMaster[]>(initialData?.genericSubjects ?? []);
   const [selectedSpecifics, setSelectedSpecifics] = useState<TagMaster[]>(initialData?.specificSubjects ?? []);
   const [defaultGenerics, setDefaultGenerics] = useState<GenericSubjectMaster[]>([]);
@@ -177,11 +180,27 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
+    if (name === 'srNo') {
+      setSrNoTouched(true);
+    }
     setFormData((prev) => ({ ...prev, [name]: name === 'srNo' ? parseInt(value || '0', 10) || 0 : value }));
     if (errors[name]) {
       setErrors((prev) => ({ ...prev, [name]: '' }));
     }
   };
+
+  useEffect(() => {
+    if (mode !== 'create') return;
+    if (nextSrNo === undefined) return;
+    if (srNoTouched) return;
+    setFormData((prev) => ({ ...prev, srNo: nextSrNo }));
+  }, [nextSrNo, mode, srNoTouched]);
+
+  useEffect(() => {
+    if (mode === 'create') {
+      setSrNoTouched(false);
+    }
+  }, [mode, defaultBookId]);
 
   const handleParagraphChange = (lang: LanguageCode, value: string) => {
     setFormData((prev) => ({ ...prev, relevantParagraph: { ...prev.relevantParagraph, [lang]: value } }));
@@ -474,7 +493,7 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
 
         <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <label className="text-sm font-medium text-gray-700">Specific Tags</label>
+          <label className="text-sm font-medium text-gray-700">Specific Subjects</label>
             {selectedSpecifics.length > 0 && (
               <button
                 type="button"
@@ -493,7 +512,7 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
             <p className="text-xs text-green-600">Default for you: {defaultSpecifics.map((d) => d.name).join(', ')}</p>
           )}
           <div className="min-h-[44px] rounded-md border border-dashed border-green-200 bg-green-50/40 p-2 flex flex-wrap gap-2">
-            {selectedSpecifics.length === 0 && <p className="text-xs text-gray-500">No specific tags selected</p>}
+            {selectedSpecifics.length === 0 && <p className="text-xs text-gray-500">No specific subjects selected</p>}
             {selectedSpecifics.map((tag) => (
               <span key={tag.id} className="inline-flex items-center rounded-full bg-green-100 px-2 py-1 text-xs text-green-800">
                 {tag.name}
@@ -507,14 +526,14 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
             type="text"
             value={tagQuery}
             onChange={(e) => setTagQuery(e.target.value)}
-            placeholder="Search specific tags..."
+            placeholder="Search specific subjects..."
             className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
           />
           <div className="border border-gray-200 rounded-md max-h-48 overflow-y-auto bg-white">
             {renderSearchResults(tagOptions, formData.specificSubjectIds || [], addSpecificTag, tagLoading)}
           </div>
           <div className="rounded-md border border-dashed border-green-200 bg-green-50/50 p-3 space-y-2">
-            <p className="text-xs font-medium text-green-800">Quick add specific tag</p>
+            <p className="text-xs font-medium text-green-800">Quick add specific subject</p>
             <input
               type="text"
               value={newTagName}
@@ -668,15 +687,15 @@ export const TransactionDetailView: React.FC<{ transaction: SummaryTransaction }
           value={
             transaction.genericSubjects && transaction.genericSubjects.length
               ? transaction.genericSubjects.map((subject) => subject.name).join(', ')
-              : 'Not set'
+              : ''
           }
         />
         <DetailItem
-          label="Specific Tags"
+          label="Specific Subjects"
           value={
             transaction.specificSubjects && transaction.specificSubjects.length
               ? transaction.specificSubjects.map((tag) => tag.name).join(', ')
-              : 'Not set'
+              : ''
           }
         />
         <DetailItem label="Paragraph" value={transaction.paragraphNo || '—'} />
