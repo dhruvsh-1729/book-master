@@ -212,6 +212,8 @@ export interface DataTableProps<T = any> {
   searchable?: boolean;
   onSearch?: (search: string) => void;
   searchPlaceholder?: string;
+  actionBusyRowId?: string | null;
+  actionBusyMessage?: string;
 }
 export interface ModalProps {
   isOpen: boolean;

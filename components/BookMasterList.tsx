@@ -34,6 +34,7 @@ const BookMasterList: React.FC = () => {
   const [showEditModal, setShowEditModal] = useState<boolean>(false);
   const [selectedBook, setSelectedBook] = useState<BookMaster | null>(null);
   const [alert, setAlert] = useState<AlertProps | null>(null);
+  const [deleteInProgressId, setDeleteInProgressId] = useState<string | null>(null);
   const [stats, setStats] = useState<DashboardStats>({
     totalBooks: 0,
     totalTransactions: 0,
@@ -105,6 +106,7 @@ const BookMasterList: React.FC = () => {
   };
   const handleDeleteBook = async (b: BookMaster) => {
     if (!confirm(`Delete "${b.bookName}"?`)) return;
+    setDeleteInProgressId(b.id);
     try {
       const res = await fetch(`/api/books/${b.id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('Failed to delete book');
@@ -112,6 +114,8 @@ const BookMasterList: React.FC = () => {
       fetchBooks(pagination.page, searchTerm);
     } catch (e: any) {
       setAlert({ type: 'error', message: e.message });
+    } finally {
+      setDeleteInProgressId(null);
     }
   };
 
@@ -164,7 +168,7 @@ const BookMasterList: React.FC = () => {
         <StatsCard title="Total Books" value={stats.totalBooks} icon={Book} color="blue" />
         <StatsCard title="Total Transactions" value={stats.totalTransactions} icon={FileText} color="green" />
         <StatsCard title="Generic Subjects" value={stats.totalGenericSubjects} icon={TagIcon} color="yellow" />
-        <StatsCard title="Specific Tags" value={stats.totalSpecificTags} icon={TagIcon} color="red" />
+        <StatsCard title="Specific Subjects" value={stats.totalSpecificTags} icon={TagIcon} color="red" />
       </div>
 
       <Card
@@ -189,6 +193,8 @@ const BookMasterList: React.FC = () => {
           onView={handleViewBook}
           onEdit={handleEditBook}
           onDelete={handleDeleteBook}
+          actionBusyRowId={deleteInProgressId}
+          actionBusyMessage="Deleting..."
           searchable
           onSearch={handleSearch}
           searchPlaceholder="Search books, library numbers..."

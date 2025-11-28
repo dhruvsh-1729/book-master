@@ -97,7 +97,7 @@ const Dashboard: React.FC = () => {
         <StatsCard title="Total Books" value={stats.totalBooks} icon={Book} color="blue" />
         <StatsCard title="Total Transactions" value={stats.totalTransactions} icon={FileText} color="green" />
         <StatsCard title="Generic Subjects" value={stats.totalGenericSubjects} icon={Tag} color="yellow" />
-        <StatsCard title="Specific Tags" value={stats.totalSpecificTags} icon={Tag} color="red" />
+        <StatsCard title="Specific Subjects" value={stats.totalSpecificTags} icon={Tag} color="red" />
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">

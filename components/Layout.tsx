@@ -1,6 +1,6 @@
 // components/Layout.tsx
 // Updated components/Layout.tsx - Add user info and logout
-import React, { useState, ReactNode, useEffect } from 'react';
+import React, { useState, ReactNode, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useAuth } from '../hooks/useAuth';
@@ -118,6 +118,23 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const [optionsLoaded, setOptionsLoaded] = useState(false);
   const [optionsLoading, setOptionsLoading] = useState(false);
   const router = useRouter();
+  const importEventSourceRef = useRef<EventSource | null>(null);
+  const lastCreatedCountRef = useRef<number>(0);
+  const activeImportJobIdRef = useRef<string | null>(null);
+
+  const mapJobStatusToImportStatus = (status: ImportJobSummary['status']): ImportStatus => {
+    if (status === 'completed' || status === 'failed') return status;
+    return 'processing';
+  };
+
+  const closeImportStream = () => {
+    if (importEventSourceRef.current) {
+      importEventSourceRef.current.close();
+      importEventSourceRef.current = null;
+    }
+    activeImportJobIdRef.current = null;
+    lastCreatedCountRef.current = 0;
+  };
 
   const navigation: NavigationItem[] = [
     { name: 'Dashboard', href: '/', icon: Home },
@@ -167,6 +184,81 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       return { ...prev, logs: nextLogs.slice(-200) };
     });
   };
+
+  const startImportStatusStream = (jobId: string) => {
+    if (!jobId) return;
+
+    if (activeImportJobIdRef.current === jobId && importEventSourceRef.current) {
+      return;
+    }
+
+    closeImportStream();
+    activeImportJobIdRef.current = jobId;
+    lastCreatedCountRef.current = importState.summary?.totalCreated ?? 0;
+
+    const source = new EventSource(`/api/book-import/status?jobId=${jobId}`);
+    importEventSourceRef.current = source;
+
+    source.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        if (!payload?.type) return;
+
+        if (payload.type === 'summary') {
+          const summary = payload.payload as ImportJobSummary;
+
+          setImportState((prev) => {
+            const nextState = {
+              ...prev,
+              summary,
+              status: mapJobStatusToImportStatus(summary.status),
+              uploading: false,
+            };
+            if (summary.status === 'failed' && !prev.error) {
+              nextState.error = 'Import failed. Check the errors below.';
+            }
+            return nextState;
+          });
+
+          if (typeof summary.totalCreated === 'number' && summary.totalCreated !== lastCreatedCountRef.current) {
+            appendImportLog(`Transactions created: ${summary.totalCreated}`);
+            lastCreatedCountRef.current = summary.totalCreated;
+          }
+
+          if (summary.status === 'completed') {
+            appendImportLog(`Import completed. Created ${summary.totalCreated}, skipped ${summary.totalSkipped}.`);
+            closeImportStream();
+          } else if (summary.status === 'failed') {
+            appendImportLog('Import failed. Review the errors for details.');
+            closeImportStream();
+          }
+          return;
+        }
+
+        if (payload.type === 'file-error') {
+          appendImportLog(
+            `File error: ${payload.payload?.fileName || 'Unknown file'} – ${payload.payload?.message || 'Import failed'}`
+          );
+        } else if (payload.type === 'job-failed') {
+          appendImportLog('Import failed unexpectedly.');
+          closeImportStream();
+        }
+      } catch (error) {
+        console.error('Failed to parse import status event', error);
+      }
+    };
+
+    source.onerror = () => {
+      appendImportLog('Live status connection lost. Will stop receiving updates.');
+      closeImportStream();
+    };
+  };
+
+  useEffect(() => {
+    return () => {
+      closeImportStream();
+    };
+  }, []);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files ? Array.from(event.target.files) : [];
@@ -243,17 +335,28 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       const data = await response.json();
       if (!response.ok) throw new Error(data?.error || 'Failed to start import');
 
-      const summary = data.summary as ImportJobSummary;
-      appendImportLog(
-        `Import finished: created ${summary?.totalCreated ?? 0}, skipped ${summary?.totalSkipped ?? 0}.`
-      );
+      const summary = data.summary as ImportJobSummary | undefined;
+      if (!summary?.jobId) {
+        throw new Error('Import started but the job could not be tracked.');
+      }
+
+      lastCreatedCountRef.current = summary.totalCreated ?? 0;
+      appendImportLog('Import started. Tracking transactions as they are created.');
       setImportState((prev) => ({
         ...prev,
         uploading: false,
-        status: summary.status === 'failed' ? 'failed' : 'completed',
+        status: mapJobStatusToImportStatus(summary.status),
         summary: summary ?? null,
-        error: summary?.status === 'failed' ? 'Import completed with errors.' : '',
+        error: '',
       }));
+
+      startImportStatusStream(summary.jobId);
+
+      if (summary.status === 'completed' || summary.status === 'failed') {
+        appendImportLog(
+          `Import ${summary.status}. Created ${summary.totalCreated}, skipped ${summary.totalSkipped}.`
+        );
+      }
     } catch (error: any) {
       setImportState((prev) => ({
         ...prev,
@@ -265,6 +368,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   };
 
   const resetImportModal = () => {
+    closeImportStream();
     setImportState({
       files: [],
       uploading: false,
@@ -416,8 +520,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               </div>
 
               <p className="text-sm text-gray-600">
-                Each file may contain one or many sheets. The first row should describe the book, and all subsequent rows are treated as summary transactions. Blank values in Title,
-                Generic Subject, or Specific Tag columns will automatically reuse the last non-empty value above them.
+                Each file may contain one or many sheets. The first row should describe the book, and all subsequent rows are treated as summary transactions.
               </p>
 
               <div className="border border-gray-200 rounded-md bg-gray-50 p-4 space-y-2">
@@ -438,6 +541,16 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                   >
                     {importState.status.toUpperCase()}
                   </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-sm text-gray-700">
+                  <div className="flex items-center justify-between bg-white border border-gray-200 rounded px-3 py-2">
+                    <span>Transactions created</span>
+                    <span className="font-semibold text-green-700">{importState.summary?.totalCreated ?? 0}</span>
+                  </div>
+                  <div className="flex items-center justify-between bg-white border border-gray-200 rounded px-3 py-2">
+                    <span>Rows skipped</span>
+                    <span className="font-semibold text-gray-700">{importState.summary?.totalSkipped ?? 0}</span>
+                  </div>
                 </div>
                 <div className="mt-2 max-h-48 overflow-y-auto text-xs font-mono space-y-1 bg-white border border-gray-200 rounded-md px-3 py-2">
                   {importState.logs.length === 0 && <p className="text-gray-500">Events will appear here once the import starts.</p>}
@@ -582,7 +695,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                       options={exportOptions.genericSubjects.map((subject) => ({ value: subject.id, label: subject.name }))}
                     />
                     <FormInput
-                      label="Specific Tag"
+                      label="Specific Subject"
                       name="specificSubjectId"
                       type="select"
                       value={exportFilters.specificSubjectId}
