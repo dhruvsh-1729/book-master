@@ -1,6 +1,6 @@
 // components/Layout.tsx
 // Updated components/Layout.tsx - Add user info and logout
-import React, { useState, ReactNode, useEffect, useRef } from 'react';
+import React, { useState, ReactNode, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useAuth } from '../hooks/useAuth';
@@ -88,14 +88,11 @@ const arrayBufferToBase64 = (buffer: ArrayBuffer) => {
 // Main Layout Component
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const { user } = useAuth();
-  const importPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const lastSummaryRef = useRef<ImportJobSummary | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
   const [importState, setImportState] = useState({
     files: [] as SelectedUpload[],
-    jobId: '',
     uploading: false,
     status: 'idle' as ImportStatus,
     error: '',
@@ -164,99 +161,11 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     loadOptions();
   }, [showExportModal, optionsLoaded, optionsLoading]);
 
-  const cleanupImportPolling = () => {
-    if (importPollRef.current) {
-      clearInterval(importPollRef.current);
-      importPollRef.current = null;
-    }
-  };
-
-  useEffect(() => () => cleanupImportPolling(), []);
-
   const appendImportLog = (message: string) => {
     setImportState((prev) => {
       const nextLogs = [...prev.logs, { id: createLocalId(), timestamp: new Date().toISOString(), message }];
       return { ...prev, logs: nextLogs.slice(-200) };
     });
-  };
-  const logSummaryDiff = (prev: ImportJobSummary | null, next: ImportJobSummary) => {
-    if (!prev || prev.status !== next.status) {
-      appendImportLog(`Status → ${next.status.toUpperCase()}`);
-    }
-
-    next.files.forEach((file) => {
-      const prevFile = prev?.files.find((f) => f.fileName === file.fileName);
-      if (!prevFile || prevFile.status !== file.status) {
-        appendImportLog(`File ${file.fileName}: ${file.status}`);
-      }
-
-      file.sheets.forEach((sheet) => {
-        const prevSheet = prevFile?.sheets.find((s) => s.name === sheet.name);
-        const countsChanged =
-          !prevSheet || prevSheet.created !== sheet.created || prevSheet.skipped !== sheet.skipped;
-        const errorChanged = sheet.error && sheet.error !== prevSheet?.error;
-        if (countsChanged || errorChanged) {
-          appendImportLog(
-            `Sheet ${sheet.name}: created ${sheet.created}, skipped ${sheet.skipped}${
-              sheet.error ? `, error: ${sheet.error}` : ''
-            }`
-          );
-        }
-      });
-    });
-  };
-
-  const handleSummaryUpdate = (summary: ImportJobSummary) => {
-    logSummaryDiff(lastSummaryRef.current, summary);
-    lastSummaryRef.current = summary;
-    setImportState((prev) => ({
-      ...prev,
-      summary,
-      status:
-        summary.status === 'completed'
-          ? 'completed'
-          : summary.status === 'failed'
-          ? 'failed'
-          : 'processing',
-    }));
-
-    if (summary.status === 'completed' || summary.status === 'failed') {
-      cleanupImportPolling();
-      if (summary.status === 'failed') {
-        setImportState((prev) => ({
-          ...prev,
-          error: prev.error || 'Import failed. Review the logs for details.',
-        }));
-      }
-    }
-  };
-
-  const startImportStatusPolling = (jobId: string) => {
-    cleanupImportPolling();
-
-    const fetchSummary = async () => {
-      try {
-        const response = await fetch(`/api/book-import/jobs/${jobId}`);
-        const payload = await response.json().catch(() => null);
-
-        if (!response.ok || !payload) {
-          throw new Error(payload?.error || 'Failed to fetch import status');
-        }
-
-        handleSummaryUpdate(payload as ImportJobSummary);
-      } catch (error: any) {
-        appendImportLog(`Status polling error: ${error?.message || error}`);
-        cleanupImportPolling();
-        setImportState((prev) => ({
-          ...prev,
-          status: prev.status === 'completed' ? prev.status : 'failed',
-          error: prev.error || 'Import status polling failed.',
-        }));
-      }
-    };
-
-    fetchSummary();
-    importPollRef.current = setInterval(fetchSummary, 2000);
   };
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -334,17 +243,18 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       const data = await response.json();
       if (!response.ok) throw new Error(data?.error || 'Failed to start import');
 
-      appendImportLog(`Job ${data.jobId} accepted. Processing will begin shortly.`);
+      const summary = data.summary as ImportJobSummary;
+      appendImportLog(
+        `Import finished: created ${summary?.totalCreated ?? 0}, skipped ${summary?.totalSkipped ?? 0}.`
+      );
       setImportState((prev) => ({
         ...prev,
         uploading: false,
-        status: 'processing',
-        jobId: data.jobId,
+        status: summary.status === 'failed' ? 'failed' : 'completed',
+        summary: summary ?? null,
+        error: summary?.status === 'failed' ? 'Import completed with errors.' : '',
       }));
-      lastSummaryRef.current = null;
-      startImportStatusPolling(data.jobId);
     } catch (error: any) {
-      cleanupImportPolling();
       setImportState((prev) => ({
         ...prev,
         uploading: false,
@@ -355,11 +265,8 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   };
 
   const resetImportModal = () => {
-    cleanupImportPolling();
-    lastSummaryRef.current = null;
     setImportState({
       files: [],
-      jobId: '',
       uploading: false,
       status: 'idle',
       error: '',
@@ -471,7 +378,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               {importState.summary && (
                 <Alert
                   type={importState.summary.status === 'completed' ? 'success' : 'warning'}
-                  message={`Job ${importState.summary.jobId} ${importState.summary.status}. Created ${importState.summary.totalCreated} record(s), skipped ${importState.summary.totalSkipped}.`}
+                  message={`Import ${importState.summary.status}. Created ${importState.summary.totalCreated} record(s), skipped ${importState.summary.totalSkipped}.`}
                   onClose={() => setImportState((prev) => ({ ...prev, summary: null }))}
                 />
               )}

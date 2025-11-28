@@ -21,6 +21,15 @@ interface BookPayload {
 interface JobImportCaches {
   books: Map<string, Promise<BookRecord>>;
   transactionKeys: Map<string, Set<string>>;
+  genericSubjects: Map<string, Promise<{ id: string; name: string }>>;
+  specificTags: Map<string, Promise<{ id: string; name: string; category: string | null }>>;
+  transactionLookups: Map<
+    string,
+    {
+      bySrNo: Map<number, string>;
+      byTitle: Map<string, string>;
+    }
+  >;
 }
 
 const CSV_PARSE_OPTIONS = {
@@ -274,9 +283,15 @@ async function startImportJob(req: NextApiRequest, res: NextApiResponse, userId:
     preparedFiles.map((file) => ({ fileName: file.fileName, fileType: file.fileType }))
   );
 
-  setImmediate(() => processImportJob(job.id, userId, preparedFiles, body.bookName));
-
-  return res.status(202).json({ jobId: job.id });
+  try {
+    await processImportJob(job.id, userId, preparedFiles, body.bookName);
+    const summary = importJobManager.getJob(job.id)?.summary;
+    if (!summary) throw new Error("Unable to build import summary");
+    const statusCode = summary.status === "failed" ? 400 : 200;
+    return res.status(statusCode).json({ summary });
+  } catch (error: any) {
+    return res.status(500).json({ error: error?.message || "Import failed" });
+  }
 }
 
 function normalizeIncomingFile(file: IncomingFilePayload): PreparedFile {
@@ -326,6 +341,9 @@ async function processImportJob(
   const jobCaches: JobImportCaches = {
     books: new Map(),
     transactionKeys: new Map(),
+    genericSubjects: new Map(),
+    specificTags: new Map(),
+    transactionLookups: new Map(),
   };
 
   // keep a global seen set to avoid duplicates across all files in same job
@@ -342,11 +360,12 @@ async function processImportJob(
     }
   } catch (error: any) {
     importJobManager.completeJob(job, "failed", error?.message || "Import failed");
-    return;
+    return job.summary;
   }
 
   const hasFailures = job.summary.files.some((file) => file.status === "failed");
   importJobManager.completeJob(job, hasFailures ? "failed" : "completed");
+  return job.summary;
 }
 
 async function processSingleFile(
@@ -656,27 +675,11 @@ async function importFromRecords(
 
     try {
       const genericRecords = genericNames.length
-        ? await Promise.all(
-            genericNames.map((name) =>
-              prisma.genericSubjectMaster.upsert({
-                where: { name },
-                update: {},
-                create: { name },
-              })
-            )
-          )
+        ? await Promise.all(genericNames.map((name) => getGenericSubject(name, caches)))
         : [];
 
       const specificRecords = specificNames.length
-        ? await Promise.all(
-            specificNames.map((name) =>
-              prisma.tagMaster.upsert({
-                where: { name },
-                update: tagCategory ? { category: tagCategory } : {},
-                create: { name, category: tagCategory },
-              })
-            )
-          )
+        ? await Promise.all(specificNames.map((name) => getSpecificTag(name, tagCategory, caches)))
         : [];
 
       const transactionData = {
@@ -694,20 +697,21 @@ async function importFromRecords(
         userId,
       };
 
-      let existingTransaction = null;
-      if (srNoValue !== null) {
-        existingTransaction = await prisma.summaryTransaction.findFirst({
-          where: { bookId: book.id, userId, srNo: srNoValue },
-        });
-      } else if (rowTitle) {
-        existingTransaction = await prisma.summaryTransaction.findFirst({
-          where: { bookId: book.id, userId, title: rowTitle },
-        });
+      const lookup = await getTransactionLookup(book.id, userId, caches);
+      const normalizedRowTitle = rowTitle ? normalizeText(rowTitle) : "";
+      let existingId: string | undefined;
+      if (srNoValue !== null && lookup.bySrNo.has(srNoValue)) {
+        existingId = lookup.bySrNo.get(srNoValue);
+      }
+      if (!existingId && normalizedRowTitle && lookup.byTitle.has(normalizedRowTitle)) {
+        existingId = lookup.byTitle.get(normalizedRowTitle);
       }
 
-      if (existingTransaction) {
+      const isUpdate = Boolean(existingId);
+
+      if (existingId) {
         await prisma.summaryTransaction.update({
-          where: { id: existingTransaction.id },
+          where: { id: existingId },
           data: {
             ...transactionData,
             genericSubjects: genericRecords.length
@@ -729,7 +733,7 @@ async function importFromRecords(
           },
         });
       } else {
-        await prisma.summaryTransaction.create({
+        const createdTx = await prisma.summaryTransaction.create({
           data: {
             ...transactionData,
             genericSubjects: genericRecords.length
@@ -748,10 +752,20 @@ async function importFromRecords(
               : undefined,
           },
         });
+        existingId = createdTx.id;
         sheetSummary.created += 1;
         importJobManager.updateSummary(job, (draft) => {
           draft.totalCreated += 1;
         });
+      }
+
+      if (existingId) {
+        if (srNoValue !== null) {
+          lookup.bySrNo.set(srNoValue, existingId);
+        }
+        if (normalizedRowTitle) {
+          lookup.byTitle.set(normalizedRowTitle, existingId);
+        }
       }
 
       importJobManager.emit(job, {
@@ -761,7 +775,7 @@ async function importFromRecords(
           fileName,
           sheetName,
           rowIndex,
-          mode: existingTransaction ? "updated" : "created",
+          mode: isUpdate ? "updated" : "created",
         },
       });
     } catch (error: any) {
@@ -855,6 +869,55 @@ async function getOrCreateBookForJob(
   }
 
   return promise;
+}
+
+async function getGenericSubject(name: string, caches: JobImportCaches) {
+  const normalized = normalizeText(name) || name.trim();
+  let promise = caches.genericSubjects.get(normalized);
+  if (!promise) {
+    promise = prisma.genericSubjectMaster.upsert({
+      where: { name: name.trim() },
+      update: {},
+      create: { name: name.trim() },
+    });
+    caches.genericSubjects.set(normalized, promise);
+  }
+  return promise;
+}
+
+async function getSpecificTag(name: string, category: string | null, caches: JobImportCaches) {
+  const normalized = normalizeText(name) || name.trim();
+  let promise = caches.specificTags.get(normalized);
+  if (!promise) {
+    promise = prisma.tagMaster.upsert({
+      where: { name: name.trim() },
+      update: category ? { category } : {},
+      create: { name: name.trim(), category },
+    });
+    caches.specificTags.set(normalized, promise);
+  }
+  return promise;
+}
+
+async function getTransactionLookup(bookId: string, userId: string, caches: JobImportCaches) {
+  let lookup = caches.transactionLookups.get(bookId);
+  if (!lookup) {
+    const existing = await prisma.summaryTransaction.findMany({
+      where: { bookId, userId },
+      select: { id: true, srNo: true, title: true },
+    });
+    lookup = { bySrNo: new Map(), byTitle: new Map() };
+    existing.forEach((tx) => {
+      if (typeof tx.srNo === "number") {
+        lookup!.bySrNo.set(tx.srNo, tx.id);
+      }
+      if (tx.title) {
+        lookup!.byTitle.set(normalizeText(tx.title), tx.id);
+      }
+    });
+    caches.transactionLookups.set(bookId, lookup);
+  }
+  return lookup;
 }
 
 async function handleExport(req: NextApiRequest, res: NextApiResponse, userId: string) {
