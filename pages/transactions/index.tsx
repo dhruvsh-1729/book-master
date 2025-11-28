@@ -358,7 +358,7 @@ const TransactionsPage: React.FC = () => {
           loading={loading}
           searchable
           onSearch={handleSearch}
-          searchPlaceholder="Search transactions..."
+          searchPlaceholder="Search by title..."
           rowClickable
           onRowClick={handleRowClick}
           onDelete={handleDeleteTransaction}
