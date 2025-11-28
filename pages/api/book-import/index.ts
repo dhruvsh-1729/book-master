@@ -74,18 +74,22 @@ const COLS = {
 
 const TRANSACTION_CONCURRENCY = 8;
 
+const BOOK_INFO_FIELDS = [
+  { key: "libraryNumber", label: "Library Number" },
+  { key: "bookName", label: "Book Name" },
+  { key: "bookSummary", label: "Book Summary" },
+  { key: "pageNumbers", label: "Page Numbers" },
+  { key: "grade", label: "Grade" },
+  { key: "remark", label: "Book Remark" },
+  { key: "edition", label: "Edition" },
+  { key: "publisherName", label: "Publisher Name" },
+];
+
 const EXPORT_HEADERS = [
-  { key: "libraryNumber", label: "Sr No.", source: "book" },
+  { key: "srNo", label: "Sr No", source: "transaction" },
   { key: "genericSubjectName", label: "Generic Subject", source: "transaction-extra" },
   { key: "specificTagName", label: "Specific Subject", source: "transaction-extra" },
-  { key: "bookName", label: "Book Name", source: "book" },
-  { key: "bookSummary", label: "Book Summary", source: "book" },
-  { key: "pageNumbers", label: "Page Numbers", source: "book" },
-  { key: "grade", label: "Grade", source: "book" },
-  { key: "remark", label: "Book Remark", source: "book" },
-  { key: "edition", label: "Edition", source: "book" },
-  { key: "publisherName", label: "Publisher Name", source: "book" },
-  { key: "srNo", label: "Sr No", source: "transaction" },
+  { key: "tagCategory", label: "Specific Category", source: "transaction-extra" },
   { key: "title", label: "Title", source: "transaction" },
   { key: "keywords", label: "Keywords", source: "transaction" },
   { key: "relevantParagraph", label: "Relevant Paragraph", source: "transaction" },
@@ -95,7 +99,7 @@ const EXPORT_HEADERS = [
   { key: "itemRemark", label: "Txn Remark", source: "transaction" },
   { key: "summary", label: "Summary", source: "transaction" },
   { key: "conclusion", label: "Conclusion", source: "transaction" },
-  { key: "tagCategory", label: "Specific Category", source: "transaction-extra" },
+  { key: "footNote", label: "Footnote", source: "transaction" },
 ];
 
 const truthy = (v: unknown) => v !== undefined && v !== null && String(v).trim() !== "";
@@ -192,11 +196,11 @@ const maybeParseJSON = (value?: string) => {
 };
 
 const escapeCsv = (value: unknown) => {
-  const str = value === null || value === undefined ? "" : String(value);
-  if (/[",\n]/.test(str)) {
-    return `"${str.replace(/"/g, '""')}"`;
-  }
-  return str;
+  if (value === null || value === undefined) return "";
+  const normalized = String(value)
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n");
+  return `"${normalized.replace(/"/g, '""')}"`;
 };
 
 const toStr = (v: unknown) =>
@@ -1035,16 +1039,14 @@ async function handleExport(req: NextApiRequest, res: NextApiResponse, userId: s
     orderBy: [{ srNo: "asc" }, { createdAt: "asc" }],
   });
 
-  const header = EXPORT_HEADERS.map((col) => col.label);
-  const rows: string[][] = [header];
+  const rows: string[][] = [];
 
-  const firstRow = EXPORT_HEADERS.map((col) => {
-    if (col.source === "book") {
-      return escapeCsv((book as any)[col.key] ?? "");
-    }
-    return "";
+  BOOK_INFO_FIELDS.forEach((field) => {
+    rows.push([field.label, escapeCsv((book as any)[field.key] ?? "")]);
   });
-  rows.push(firstRow);
+
+  rows.push([]);
+  rows.push(EXPORT_HEADERS.map((col) => col.label));
 
   if (transactions.length) {
     transactions.forEach((tx) => {
@@ -1059,11 +1061,11 @@ async function handleExport(req: NextApiRequest, res: NextApiResponse, userId: s
         .filter(Boolean);
 
       const row = EXPORT_HEADERS.map((col) => {
-        if (col.source === "book") return "";
         if (col.key === "genericSubjectName") return escapeCsv(joinMultiValues(genericNames));
         if (col.key === "specificTagName") return escapeCsv(joinMultiValues(specificNames));
         if (col.key === "tagCategory") return escapeCsv(joinMultiValues(specificCategories));
         if (col.key === "itemRemark") return escapeCsv(tx.remark ?? "");
+        if (col.key === "footNote") return escapeCsv(tx.footNote ?? "");
         if (col.key === "relevantParagraph") {
           const value = tx.relevantParagraph;
           if (!value) return "";
