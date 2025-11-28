@@ -78,6 +78,7 @@ model BookMaster {
   editor       BookEditor[]
   // (1) One book can have many summary transactions
   transactions SummaryTransaction[] @relation("BookToTransactions")
+  images       BookImage[]
 
   @@index([userId])
   @@index([bookName])
@@ -127,6 +128,7 @@ model SummaryTransaction {
   user             User                                 @relation(fields: [userId], references: [id])
   genericSubjects  SummaryTransactionGenericSubject[]
   specificSubjects SummaryTransactionSpecificTag[]
+  images           TransactionImage[]
   bookMasterId     String?                              @db.ObjectId
 
   @@index([bookId])
@@ -134,6 +136,32 @@ model SummaryTransaction {
   @@index([srNo])
   @@index([title])
   @@map("summary_transactions")
+}
+
+model BookImage {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  bookId    String   @db.ObjectId
+  url       String
+  publicId  String?
+  createdAt DateTime @default(now())
+
+  book BookMaster @relation(fields: [bookId], references: [id])
+
+  @@index([bookId])
+  @@map("book_images")
+}
+
+model TransactionImage {
+  id                     String   @id @default(auto()) @map("_id") @db.ObjectId
+  summaryTransactionId   String   @db.ObjectId
+  url                    String
+  publicId               String?
+  createdAt              DateTime @default(now())
+
+  summaryTransaction SummaryTransaction @relation(fields: [summaryTransactionId], references: [id])
+
+  @@index([summaryTransactionId])
+  @@map("transaction_images")
 }
 
 model SummaryTransactionGenericSubject {

@@ -140,6 +140,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     { name: 'Dashboard', href: '/', icon: Home },
     { name: 'Book Master', href: '/books', icon: Book },
     { name: 'Subject Management', href: '/subjects', icon: Tag },
+    { name: 'Transaction Search', href: '/transactions/search', icon: Search },
     { name: 'All Transactions', href: '/transactions', icon: FileText },
     ...(user?.role === 'admin' ? [{ name: 'Admin', href: '/admin', icon: Settings }] : []),
   ];

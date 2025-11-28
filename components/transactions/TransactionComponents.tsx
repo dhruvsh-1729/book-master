@@ -12,6 +12,7 @@ import {
 } from '../../types';
 import { useDebounce } from '../../hooks/useDebounce';
 import ImageUploader from '../ImageUploader';
+import MultiImageUploader, { MediaImage } from '../MultiImageUploader';
 
 type RemoteCollectionKey = 'subjects' | 'tags';
 
@@ -154,6 +155,13 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
   const [newTagCategory, setNewTagCategory] = useState('');
   const [newTagError, setNewTagError] = useState<string | null>(null);
   const [newTagSaving, setNewTagSaving] = useState(false);
+  const [images, setImages] = useState<MediaImage[]>(
+    initialData?.images && initialData.images.length
+      ? initialData.images
+      : initialData?.imageUrl
+      ? [{ url: initialData.imageUrl, publicId: initialData.imagePublicId }]
+      : []
+  );
 
   const {
     query: genericQuery,
@@ -222,8 +230,9 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
     try {
       await onSubmit({
         ...formData,
-        imageUrl: formData.imageUrl || null,
-        imagePublicId: formData.imagePublicId || null,
+        imageUrl: images[0]?.url ?? null,
+        imagePublicId: images[0]?.publicId ?? null,
+        images,
         footNote: formData.footNote || null,
       });
     } catch (error: any) {
@@ -404,19 +413,12 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
       <FormInput label="Title / Heading" name="title" value={formData.title} onChange={handleInputChange} placeholder="Enter title or heading" />
       <FormInput label="Keywords" name="keywords" value={formData.keywords} onChange={handleInputChange} placeholder="Comma separated keywords" />
 
-      <ImageUploader
-        label="Reference Image"
-        value={formData.imageUrl ? { url: formData.imageUrl, publicId: formData.imagePublicId } : null}
-        onChange={(val) =>
-          setFormData((prev) => ({
-            ...prev,
-            imageUrl: val?.url ?? '',
-            imagePublicId: val?.publicId ?? '',
-          }))
-        }
-        aspect={4 / 3}
+      <MultiImageUploader
+        label="Reference Images"
+        value={images}
+        onChange={setImages}
         uploadFolder="transactions"
-        helpText="Attach a cropped image to accompany this summary transaction."
+        helpText="Add one or more images. First image will be used as cover where needed."
       />
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -659,7 +661,34 @@ export const TransactionDetailView: React.FC<{ transaction: SummaryTransaction }
 
   return (
     <div className="space-y-6">
-      {transaction.imageUrl && (
+      {(transaction.images && transaction.images.length > 0) ? (
+        <div className="space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {transaction.images.map((img) => (
+              <div key={img.url} className="overflow-hidden rounded-lg border border-gray-200 bg-black/5">
+                <img
+                  src={img.url}
+                  alt={transaction.title || 'Transaction image'}
+                  className="w-full max-h-[420px] object-contain"
+                />
+              </div>
+            ))}
+          </div>
+          <div className="flex flex-wrap gap-3">
+            {transaction.images.map((img) => (
+              <a
+                key={`${img.url}-link`}
+                href={img.url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs text-blue-600 hover:text-blue-700 inline-flex items-center gap-1"
+              >
+                View image
+              </a>
+            ))}
+          </div>
+        </div>
+      ) : transaction.imageUrl ? (
         <div className="space-y-2">
           <div className="overflow-hidden rounded-lg border border-gray-200 bg-black/5">
             <img
@@ -677,7 +706,7 @@ export const TransactionDetailView: React.FC<{ transaction: SummaryTransaction }
             View full image
           </a>
         </div>
-      )}
+      ) : null}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <DetailItem label="Serial Number" value={`#${transaction.srNo}`} />

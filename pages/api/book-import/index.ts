@@ -76,6 +76,8 @@ const TRANSACTION_CONCURRENCY = 8;
 
 const EXPORT_HEADERS = [
   { key: "libraryNumber", label: "Sr No.", source: "book" },
+  { key: "genericSubjectName", label: "Generic Subject", source: "transaction-extra" },
+  { key: "specificTagName", label: "Specific Subject", source: "transaction-extra" },
   { key: "bookName", label: "Book Name", source: "book" },
   { key: "bookSummary", label: "Book Summary", source: "book" },
   { key: "pageNumbers", label: "Page Numbers", source: "book" },
@@ -93,8 +95,6 @@ const EXPORT_HEADERS = [
   { key: "itemRemark", label: "Txn Remark", source: "transaction" },
   { key: "summary", label: "Summary", source: "transaction" },
   { key: "conclusion", label: "Conclusion", source: "transaction" },
-  { key: "genericSubjectName", label: "Generic Subject", source: "transaction-extra" },
-  { key: "specificTagName", label: "Specific Subject", source: "transaction-extra" },
   { key: "tagCategory", label: "Specific Category", source: "transaction-extra" },
 ];
 

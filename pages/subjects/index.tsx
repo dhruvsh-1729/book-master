@@ -1,6 +1,6 @@
 // pages/subjects/index.tsx - Subjects Management Page
 import React, { useState, useEffect, useRef } from 'react';
-import { Tag, Plus, Upload, Download } from 'lucide-react';
+import { Tag, Plus, Upload, Download, RefreshCw } from 'lucide-react';
 import { DataTable, FormInput, Alert, Card, Breadcrumb } from '../../components/CoreComponents';
 import { 
   GenericSubjectMaster, 
@@ -9,6 +9,7 @@ import {
   AlertProps,
   SubjectFormData 
 } from '../../types';
+import AsyncSelect, { AsyncOption } from '../../components/AsyncSelect';
 
 const SubjectsPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'generic' | 'specific'>('generic');
@@ -21,6 +22,13 @@ const SubjectsPage: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [importing, setImporting] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [showReplaceModal, setShowReplaceModal] = useState(false);
+  const [replaceType, setReplaceType] = useState<'generic' | 'specific'>('generic');
+  const [wrongSubject, setWrongSubject] = useState<AsyncOption | null>(null);
+  const [rightSubject, setRightSubject] = useState<AsyncOption | null>(null);
+  const [replaceLoading, setReplaceLoading] = useState(false);
+  const [replaceError, setReplaceError] = useState<string | null>(null);
+  const [replaceSummary, setReplaceSummary] = useState<string | null>(null);
 
   const fetchGenericSubjects = async () => {
     try {
@@ -42,6 +50,36 @@ const SubjectsPage: React.FC = () => {
     }
   };
 
+  const handleReplace = async () => {
+    if (!wrongSubject || !rightSubject) {
+      setReplaceError('Select both the incorrect and correct subjects');
+      return;
+    }
+    setReplaceLoading(true);
+    setReplaceError(null);
+    setReplaceSummary(null);
+    try {
+      const res = await fetch('/api/subjects/replace', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: replaceType,
+          wrongId: wrongSubject.value,
+          rightId: rightSubject.value,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Replace failed');
+      setReplaceSummary(`Updated ${data.updated || 0} transaction(s).`);
+      fetchGenericSubjects();
+      fetchSpecificTags();
+    } catch (error: any) {
+      setReplaceError(error?.message || 'Failed to replace');
+    } finally {
+      setReplaceLoading(false);
+    }
+  };
+
   useEffect(() => {
     const fetchData = async () => {
       setLoading(true);
@@ -57,7 +95,7 @@ const SubjectsPage: React.FC = () => {
     {
       key: '_count',
       label: 'Usage',
-      render: (value: any) => `${value?.summaryTransactions || 0} transactions, ${value?.bookGenericTags || 0} books`
+      render: (value: any) => `${value?.summaryTransactions || 0} transactions`
     }
   ];
 
@@ -68,7 +106,7 @@ const SubjectsPage: React.FC = () => {
     {
       key: '_count',
       label: 'Usage',
-      render: (value: any) => `${value?.summaryTransactions || 0} transactions, ${value?.bookSpecificTags || 0} books`
+      render: (value: any) => `${value?.summaryTransactions || 0} transactions`
     }
   ];
 
@@ -246,6 +284,18 @@ const SubjectsPage: React.FC = () => {
               <Plus className="h-4 w-4 mr-2" />
               Add {activeTab === 'generic' ? 'Generic Subject' : 'Specific Subject'}
             </button>
+            <button
+              onClick={() => {
+                setReplaceType(activeTab);
+                setShowReplaceModal(true);
+                setReplaceError(null);
+                setReplaceSummary(null);
+              }}
+              className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700"
+            >
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Find & Replace
+            </button>
           </div>
         }
       >
@@ -344,6 +394,79 @@ const SubjectsPage: React.FC = () => {
                 onSubmit={handleSubmit}
                 onCancel={() => setShowModal(false)}
               />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Replace Modal */}
+      {showReplaceModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="fixed inset-0 bg-black/50" onClick={() => setShowReplaceModal(false)} />
+          <div className="relative z-10 w-[90vw] max-w-2xl mx-4 bg-white rounded-lg shadow-xl">
+            <div className="flex items-center justify-between px-6 py-4 border-b">
+              <h3 className="text-lg font-medium text-gray-900">Find & Replace Subjects</h3>
+              <button
+                onClick={() => setShowReplaceModal(false)}
+                className="text-gray-400 hover:text-gray-600 text-2xl leading-none"
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="flex items-center gap-3">
+                <label className="text-sm font-medium text-gray-700">Type</label>
+                <select
+                  value={replaceType}
+                  onChange={(e) => {
+                    setReplaceType(e.target.value as 'generic' | 'specific');
+                    setWrongSubject(null);
+                    setRightSubject(null);
+                    setReplaceSummary(null);
+                    setReplaceError(null);
+                  }}
+                  className="border border-gray-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                >
+                  <option value="generic">Generic Subject</option>
+                  <option value="specific">Specific Subject</option>
+                </select>
+              </div>
+
+              <AsyncSelect
+                label={`Wrong ${replaceType === 'generic' ? 'Generic Subject' : 'Specific Subject'}`}
+                fetchUrl={replaceType === 'generic' ? '/api/subjects/generic' : '/api/subjects/tags'}
+                value={wrongSubject}
+                onChange={setWrongSubject}
+                placeholder="Search the subject to replace"
+              />
+              <AsyncSelect
+                label={`Correct ${replaceType === 'generic' ? 'Generic Subject' : 'Specific Subject'}`}
+                fetchUrl={replaceType === 'generic' ? '/api/subjects/generic' : '/api/subjects/tags'}
+                value={rightSubject}
+                onChange={setRightSubject}
+                placeholder="Search the replacement subject"
+              />
+
+              {replaceError && <p className="text-sm text-red-600">{replaceError}</p>}
+              {replaceSummary && <p className="text-sm text-green-700">{replaceSummary}</p>}
+
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  onClick={() => setShowReplaceModal(false)}
+                  className="px-4 py-2 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                  disabled={replaceLoading}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleReplace}
+                  disabled={replaceLoading}
+                  className="px-4 py-2 rounded-md text-sm font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-60"
+                >
+                  {replaceLoading ? 'Updating...' : 'Replace in Transactions'}
+                </button>
+              </div>
             </div>
           </div>
         </div>

@@ -15,10 +15,12 @@ const transactionInclude = {
   user: { select: { id: true, name: true, email: true } },
   genericSubjects: { include: { genericSubject: true } },
   specificSubjects: { include: { tag: true } },
+  images: true,
 } as const;
 
 const mapTransaction = (transaction: any) => ({
   ...transaction,
+  images: transaction.images || [],
   genericSubjects: (transaction.genericSubjects || [])
     .map((link: any) => link.genericSubject)
     .filter(Boolean),

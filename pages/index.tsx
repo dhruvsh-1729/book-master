@@ -1,6 +1,7 @@
 // pages/index.tsx
 import React, { useState, useEffect } from 'react';
-import { Book, FileText, Tag, TrendingUp, BarChart2, Activity, Users } from 'lucide-react';
+import { Book, FileText, Tag, TrendingUp, BarChart2, Activity, Users, Search } from 'lucide-react';
+import { useRouter } from 'next/router';
 import { Card, StatsCard } from '../components/CoreComponents';
 import {
   DashboardStats,
@@ -83,6 +84,8 @@ const Dashboard: React.FC = () => {
     fetchDashboardData();
   }, []);
 
+  const router = useRouter();
+
   return (
     <div className="space-y-8">
       <div className="flex items-center justify-between">
@@ -98,6 +101,23 @@ const Dashboard: React.FC = () => {
         <StatsCard title="Total Transactions" value={stats.totalTransactions} icon={FileText} color="green" />
         <StatsCard title="Generic Subjects" value={stats.totalGenericSubjects} icon={Tag} color="yellow" />
         <StatsCard title="Specific Subjects" value={stats.totalSpecificTags} icon={Tag} color="red" />
+      </div>
+
+      <div className="mt-6">
+        <Card title="Transaction Search" icon={Search}>
+          <p className="text-sm text-gray-600">
+            Use the advanced survey to find any transaction across books, keywords, subjects, and more.
+          </p>
+          <div className="pt-4">
+            <button
+              type="button"
+              onClick={() => router.push('/transactions/search')}
+              className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700"
+            >
+              Open Transaction Search
+            </button>
+          </div>
+        </Card>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">

@@ -8,6 +8,7 @@ const toStr = (v: unknown, fallback = ""): string =>
 
 const mapSummaryTransaction = (transaction: any) => ({
   ...transaction,
+  images: transaction.images || [],
   genericSubjects: (transaction.genericSubjects || [])
     .map((link: any) => link.genericSubject)
     .filter(Boolean),
@@ -27,13 +28,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     try {
       const includeTransactions = toStr(req.query.includeTransactions) === "true";
 
-      const include: any = { editor: true };
+      const include: any = { editor: true, images: true };
       if (includeTransactions) {
         include.transactions = {
           orderBy: [{ srNo: "asc" }],
           include: {
             genericSubjects: { include: { genericSubject: true } },
             specificSubjects: { include: { tag: true } },
+            images: true,
             user: { select: { id: true, name: true, email: true } },
             book: {
               select: {
@@ -84,8 +86,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         publisherName,
         coverImageUrl,
         coverImagePublicId,
+        images,
         editors,
       } = req.body ?? {};
+
+      const normalizedImages =
+        Array.isArray(images) && images.length
+          ? images
+              .map((img: any) => ({
+                url: String(img.url || "").trim(),
+                publicId: img.publicId ? String(img.publicId) : null,
+              }))
+              .filter((img: any) => img.url)
+          : undefined;
+      const primaryImage = normalizedImages?.[0];
 
       const editorsProvided = editors !== undefined;
       const normalizedEditors = Array.isArray(editors)
@@ -110,11 +124,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             ...(remark !== undefined ? { remark: remark ?? null } : {}),
             ...(edition !== undefined ? { edition: edition ?? null } : {}),
             ...(publisherName !== undefined ? { publisherName: publisherName ?? null } : {}),
-            ...(coverImageUrl !== undefined ? { coverImageUrl: coverImageUrl ?? null } : {}),
-            ...(coverImagePublicId !== undefined ? { coverImagePublicId: coverImagePublicId ?? null } : {}),
+            ...(coverImageUrl !== undefined || primaryImage
+              ? { coverImageUrl: primaryImage?.url ?? coverImageUrl ?? null }
+              : {}),
+            ...(coverImagePublicId !== undefined || primaryImage
+              ? { coverImagePublicId: primaryImage?.publicId ?? coverImagePublicId ?? null }
+              : {}),
             updatedAt: new Date(),
           },
         });
+
+        if (normalizedImages) {
+          await tx.bookImage.deleteMany({ where: { bookId: id } });
+          if (normalizedImages.length) {
+            await tx.bookImage.createMany({
+              data: normalizedImages.map((img: any) => ({
+                bookId: id,
+                url: img.url,
+                publicId: img.publicId,
+              })),
+            });
+          }
+        }
 
         if (editorsProvided) {
           await tx.bookEditor.deleteMany({ where: { bookId: id } });
@@ -154,10 +185,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       await prisma.$transaction(async (tx) => {
         if (summaryIds.length) {
+          await tx.transactionImage.deleteMany({ where: { summaryTransactionId: { in: summaryIds } } });
           await tx.summaryTransactionSpecificTag.deleteMany({ where: { summaryTransactionId: { in: summaryIds } } });
           await tx.summaryTransactionGenericSubject.deleteMany({ where: { summaryTransactionId: { in: summaryIds } } });
           await tx.summaryTransaction.deleteMany({ where: { id: { in: summaryIds } } });
         }
+        await tx.bookImage.deleteMany({ where: { bookId: id } });
         await tx.bookEditor.deleteMany({ where: { bookId: id } });
         await tx.bookMaster.delete({ where: { id } });
       });

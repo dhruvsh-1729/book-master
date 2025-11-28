@@ -1,6 +1,7 @@
 // pages/api/subjects/generic/index.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import prisma from "@/lib/prisma";
+import { getUserIdFromRequest } from "@/lib/auth";
 
 const toStr = (v: unknown, fallback = ""): string =>
   typeof v === "string" ? v : Array.isArray(v) ? (v[0] ?? fallback) : fallback;
@@ -14,19 +15,21 @@ const toInt = (v: unknown, def = 1, min = 1, max?: number): number => {
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === "GET") {
     try {
+      const userId = getUserIdFromRequest(req);
+      if (!userId) return res.status(401).json({ error: "Authentication required" });
+
       const page = toInt(req.query.page, 1, 1);
       const limit = toInt(req.query.limit, 50, 1, 500);
       const search = toStr(req.query.search).trim();
 
-      const where =
-        search.length > 0
-          ? {
-              OR: [
-                { name: { contains: search, mode: "insensitive" as const } },
-                { description: { contains: search, mode: "insensitive" as const } },
-              ],
-            }
-          : undefined;
+      const where: any = search.length
+        ? {
+            OR: [
+              { name: { contains: search, mode: "insensitive" as const } },
+              { description: { contains: search, mode: "insensitive" as const } },
+            ],
+          }
+        : {};
 
       const [subjects, total] = await Promise.all([
         prisma.genericSubjectMaster.findMany({
@@ -34,7 +37,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           skip: (page - 1) * limit,
           take: limit,
           orderBy: [{ name: "asc" }],
-          include: { _count: { select: { summaryTransactions: true } } },
+          include: {
+            _count: {
+              select: {
+                summaryTransactions: {
+                  where: { summaryTransaction: { userId } },
+                },
+              },
+            },
+          },
         }),
         prisma.genericSubjectMaster.count({ where }),
       ]);

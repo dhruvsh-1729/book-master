@@ -29,10 +29,12 @@ const transactionInclude = {
   specificSubjects: {
     include: { tag: true },
   },
+  images: true,
 } as const;
 
 const mapTransaction = (transaction: any, booksById: Record<string, any>) => ({
   ...transaction,
+  images: transaction.images || [],
   book: booksById[transaction.bookId] || null,
   genericSubjects: (transaction.genericSubjects || [])
     .map((link: any) => link.genericSubject)
@@ -123,6 +125,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         footNote,
         imageUrl,
         imagePublicId,
+        images,
       } = req.body ?? {};
 
       if (!bookId || srNo === undefined) {
@@ -160,6 +163,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         new Set([...specificIds, ...defaultSpecifics.map((s) => String(s.tagId))])
       );
 
+      const normalizedImages =
+        Array.isArray(images) && images.length
+          ? images
+              .map((img: any) => ({
+                url: String(img.url || "").trim(),
+                publicId: img.publicId ? String(img.publicId) : null,
+              }))
+              .filter((img: any) => img.url)
+          : [];
+
+      const primaryImage = normalizedImages[0] ?? null;
+
       const created = await prisma.summaryTransaction.create({
         data: {
           bookId: String(bookId),
@@ -175,8 +190,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           summary: summary ?? null,
           conclusion: conclusion ?? null,
           footNote: footNote ?? null,
-          imageUrl: imageUrl ?? null,
-          imagePublicId: imagePublicId ?? null,
+          imageUrl: (primaryImage?.url ?? imageUrl) || null,
+          imagePublicId: (primaryImage?.publicId ?? imagePublicId) || null,
+          images: normalizedImages.length
+            ? {
+                create: normalizedImages.map((img: any) => ({
+                  url: img.url,
+                  publicId: img.publicId,
+                })),
+              }
+            : undefined,
           genericSubjects: mergedGenericIds.length
             ? {
                 create: mergedGenericIds.map((id) => ({

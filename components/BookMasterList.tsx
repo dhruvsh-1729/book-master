@@ -24,6 +24,7 @@ import {
   AlertProps,
 } from '../types';
 import ImageUploader from './ImageUploader';
+import MultiImageUploader from './MultiImageUploader';
 
 const BookMasterList: React.FC = () => {
   const [books, setBooks] = useState<BookMaster[]>([]);
@@ -305,6 +306,7 @@ export const BookForm: React.FC<BookFormProps> = ({ initialData = {}, onSubmit, 
     publisherName: '',
     coverImageUrl: null,
     coverImagePublicId: null,
+    images: [],
     editors: [],
   };
 
@@ -321,6 +323,7 @@ export const BookForm: React.FC<BookFormProps> = ({ initialData = {}, onSubmit, 
     publisherName: data.publisherName ?? '',
     coverImageUrl: data.coverImageUrl ?? null,
     coverImagePublicId: data.coverImagePublicId ?? null,
+    images: (data as any).images ?? [],
     editors: Array.isArray(data.editors)
       ? data.editors.map((editor) => ({
           name: editor?.name ?? '',
@@ -387,19 +390,19 @@ export const BookForm: React.FC<BookFormProps> = ({ initialData = {}, onSubmit, 
         <FormInput label="Book Name" name="bookName" value={formData.bookName} onChange={handleChange} required error={errors.bookName} placeholder="Enter book name" />
       </div>
 
-      <ImageUploader
-        label="Book Image"
-        value={formData.coverImageUrl ? { url: formData.coverImageUrl, publicId: formData.coverImagePublicId } : null}
-        onChange={(val) =>
+      <MultiImageUploader
+        label="Book Images"
+        value={(formData as any).images || []}
+        onChange={(imgs) =>
           setFormData((p) => ({
             ...p,
-            coverImageUrl: val?.url ?? null,
-            coverImagePublicId: val?.publicId ?? null,
+            coverImageUrl: imgs[0]?.url ?? null,
+            coverImagePublicId: imgs[0]?.publicId ?? null,
+            images: imgs,
           }))
         }
-        aspect={3 / 4}
         uploadFolder="books"
-        helpText="Use a cropped cover or reference image for this book."
+        helpText="Add one or more images. First image will be used as the cover."
       />
 
       <FormInput label="Book Summary" name="bookSummary" type="textarea" rows={4} value={formData.bookSummary} onChange={handleChange} placeholder="Enter a comprehensive book summary..." />
