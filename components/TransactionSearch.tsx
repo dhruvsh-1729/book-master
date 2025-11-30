@@ -1,8 +1,13 @@
 // components/TransactionSearch.tsx
-import { useState, useEffect, useCallback, useMemo, ChangeEvent } from 'react';
-import { Filter, Loader2, X } from 'lucide-react';
+import { useState, useEffect, useCallback, useMemo, ChangeEvent, KeyboardEvent, Dispatch, SetStateAction } from 'react';
+import { Filter, Loader2, Plus, X } from 'lucide-react';
 import { useRouter } from 'next/router';
-import { TransactionDetailView } from './transactions/TransactionComponents';
+import {
+  TransactionDetailView,
+  TransactionEditorForm,
+  TransactionEditorValues,
+  TransactionBook,
+} from './transactions/TransactionComponents';
 import debounce from 'lodash/debounce';
 
 type FilterOperator = 'contains' | 'equals' | 'notEquals' | 'startsWith' | 'endsWith' | 'gt' | 'lt' | 'gte' | 'lte';
@@ -11,6 +16,7 @@ type SubjectSearchMode = 'text' | 'exact';
 type SubjectMatchType = 'AND' | 'OR';
 type SubjectTextOperator = 'contains' | 'startsWith' | 'endsWith' | 'equals' | 'word';
 type TextFilterField = 'title' | 'remark' | 'footNote' | 'relevantParagraph' | 'informationRating';
+type SubjectTextEntry = { id: string; value: string; operator: SubjectTextOperator };
 
 interface FilterConfig {
   id: string;
@@ -39,7 +45,14 @@ interface Transaction {
   specificTags: Array<{
     id: string;
     name: string;
+    category?: string | null;
   }>;
+  specificSubjects?: Array<{
+    id: string;
+    name: string;
+    category?: string | null;
+  }>;
+  images?: any[];
   remark?: string | null;
   footNote?: string | null;
   informationRating?: string | null;
@@ -47,7 +60,7 @@ interface Transaction {
 }
 
 interface FilterOptions {
-  books: Array<{ id: string; bookName: string; libraryNumber: string }>;
+  books: TransactionBook[];
   genericSubjects: Array<{ id: string; name: string }>;
   tags: Array<{ id: string; name: string; category: string }>;
 }
@@ -83,6 +96,7 @@ const FIELD_TEXT_OPERATOR_OPTIONS: Array<{ value: FilterOperator; label: string 
   { value: 'startsWith', label: 'Starts With' },
   { value: 'endsWith', label: 'Ends With' },
   { value: 'equals', label: 'Exact Match' },
+  { value: 'word', label: 'Word Search' },
 ];
 
 const TEXT_FILTER_FIELDS: Array<{ key: TextFilterField; label: string; placeholder: string }> = [
@@ -110,14 +124,16 @@ export default function TransactionSearch({ initialFilterOptions }: TransactionS
   const [selectedSpecificTags, setSelectedSpecificTags] = useState<string[]>([]);
   const [selectedBookIds, setSelectedBookIds] = useState<string[]>([]);
   const [genericMode, setGenericMode] = useState<SubjectSearchMode>('text');
-  const [genericMatchType, setGenericMatchType] = useState<SubjectMatchType>('OR');
+  const [genericMatchType, setGenericMatchType] = useState<SubjectMatchType>('AND');
   const [genericTextOperator, setGenericTextOperator] = useState<SubjectTextOperator>('word');
   const [genericSearchText, setGenericSearchText] = useState('');
+  const [genericEntries, setGenericEntries] = useState<SubjectTextEntry[]>([]);
   const [genericOptionQuery, setGenericOptionQuery] = useState('');
   const [specificMode, setSpecificMode] = useState<SubjectSearchMode>('text');
-  const [specificMatchType, setSpecificMatchType] = useState<SubjectMatchType>('OR');
+  const [specificMatchType, setSpecificMatchType] = useState<SubjectMatchType>('AND');
   const [specificTextOperator, setSpecificTextOperator] = useState<SubjectTextOperator>('word');
   const [specificSearchText, setSpecificSearchText] = useState('');
+  const [specificEntries, setSpecificEntries] = useState<SubjectTextEntry[]>([]);
   const [specificOptionQuery, setSpecificOptionQuery] = useState('');
   const defaultTextFilters = () =>
     TEXT_FILTER_FIELDS.reduce(
@@ -165,42 +181,42 @@ export default function TransactionSearch({ initialFilterOptions }: TransactionS
   }, [filterOptions.tags, specificOptionQuery]);
 
   const hasSubjectFilters = useMemo(() => {
+    const hasGenericText = genericEntries.length > 0;
+    const hasSpecificText = specificEntries.length > 0;
     return (
-      genericSearchText.trim().length > 0 ||
-      specificSearchText.trim().length > 0 ||
+      hasGenericText ||
+      hasSpecificText ||
       selectedGenericSubjects.length > 0 ||
       selectedSpecificTags.length > 0 ||
       genericMode === 'exact' ||
       specificMode === 'exact' ||
-  genericTextOperator !== 'word' ||
-  specificTextOperator !== 'word' ||
       genericMatchType !== 'OR' ||
       specificMatchType !== 'OR'
     );
   }, [
-    genericSearchText,
-    specificSearchText,
     selectedGenericSubjects,
     selectedSpecificTags,
     genericMode,
     specificMode,
-    genericTextOperator,
-    specificTextOperator,
     genericMatchType,
     specificMatchType,
+    genericEntries,
+    specificEntries,
   ]);
 
   const subjectBadgeCount = useMemo(() => {
+    const genericTextCount = genericMode === 'exact' ? selectedGenericSubjects.length : genericEntries.length;
+    const specificTextCount = specificMode === 'exact' ? selectedSpecificTags.length : specificEntries.length;
     let count = 0;
-    count += genericMode === 'exact' ? selectedGenericSubjects.length : genericSearchText.trim() ? 1 : 0;
-    count += specificMode === 'exact' ? selectedSpecificTags.length : specificSearchText.trim() ? 1 : 0;
+    count += genericTextCount;
+    count += specificTextCount;
     return count;
   }, [
     genericMode,
-    genericSearchText,
+    genericEntries,
     selectedGenericSubjects,
     specificMode,
-    specificSearchText,
+    specificEntries,
     selectedSpecificTags,
   ]);
 
@@ -212,6 +228,8 @@ export default function TransactionSearch({ initialFilterOptions }: TransactionS
   const [globalSearch, setGlobalSearch] = useState<string>('');
   const [detailOpen, setDetailOpen] = useState(false);
   const [activeTx, setActiveTx] = useState<Transaction | null>(null);
+  const [detailEditing, setDetailEditing] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   // UI state
   const [showFilters, setShowFilters] = useState(false);
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
@@ -277,6 +295,41 @@ export default function TransactionSearch({ initialFilterOptions }: TransactionS
     [performSearch]
   );
 
+  const activeTxForEdit = useMemo(() => {
+    if (!activeTx) return null;
+    return {
+      ...activeTx,
+      specificSubjects: activeTx.specificTags?.map((tag) => ({
+        id: tag.id,
+        name: tag.name,
+        category: tag.category,
+      })),
+      images: activeTx.images || [],
+    };
+  }, [activeTx]);
+
+  const transformTransaction = useCallback((tx: any): Transaction => {
+    const mappedGeneric = Array.isArray(tx?.genericSubjects)
+      ? tx.genericSubjects.map((gs: any) =>
+          gs?.genericSubject ? gs.genericSubject : { id: gs.id, name: gs.name }
+        )
+      : [];
+    const mappedSpecific = Array.isArray(tx?.specificSubjects)
+      ? tx.specificSubjects.map((st: any) =>
+          st?.tag ? { id: st.tag.id, name: st.tag.name, category: st.tag.category } : { id: st.id, name: st.name, category: st.category }
+        )
+      : Array.isArray(tx?.specificTags)
+      ? tx.specificTags
+      : [];
+
+    return {
+      ...tx,
+      genericSubjects: mappedGeneric,
+      specificTags: mappedSpecific,
+      images: tx?.images || [],
+    };
+  }, []);
+
   // Trigger search when parameters change
   useEffect(() => {
     const searchParams = {
@@ -292,15 +345,19 @@ export default function TransactionSearch({ initialFilterOptions }: TransactionS
       genericSubjectFilter: {
         mode: genericMode,
         matchType: genericMatchType,
-        operator: genericTextOperator,
-        searchText: genericSearchText,
+        searchTextFilters: genericEntries.map((entry) => ({
+          text: entry.value,
+          operator: entry.operator,
+        })),
         selectedIds: selectedGenericSubjects,
       },
       specificTagFilter: {
         mode: specificMode,
         matchType: specificMatchType,
-        operator: specificTextOperator,
-        searchText: specificSearchText,
+        searchTextFilters: specificEntries.map((entry) => ({
+          text: entry.value,
+          operator: entry.operator,
+        })),
         selectedIds: selectedSpecificTags,
       },
     };
@@ -310,27 +367,24 @@ export default function TransactionSearch({ initialFilterOptions }: TransactionS
     return () => {
       debouncedSearch.cancel();
     };
-    }, [
-      page,
-      pageSize,
+  }, [
+    page,
+    pageSize,
     activeFieldFilters,
-      selectedGenericSubjects,
-      selectedSpecificTags,
+    selectedGenericSubjects,
+    selectedSpecificTags,
     selectedBookIds,
-      sortBy,
-      sortOrder,
-      debouncedSearch,
-      genericMode,
-      genericMatchType,
-      genericTextOperator,
-      genericSearchText,
-      specificMode,
-      specificMatchType,
-      specificTextOperator,
-      specificSearchText,
-      globalSearch,
-      activeFieldFilters,
-    ]);
+    sortBy,
+    sortOrder,
+    debouncedSearch,
+    genericMode,
+    genericMatchType,
+    genericEntries,
+    specificMode,
+    specificMatchType,
+    specificEntries,
+    globalSearch,
+  ]);
 
   const clearAllFilters = () => {
     setSelectedGenericSubjects([]);
@@ -338,12 +392,14 @@ export default function TransactionSearch({ initialFilterOptions }: TransactionS
     setSelectedBookIds([]);
     setGenericMode('text');
     setSpecificMode('text');
-    setGenericMatchType('OR');
-    setSpecificMatchType('OR');
-  setGenericTextOperator('word');
-  setSpecificTextOperator('word');
+    setGenericMatchType('AND');
+    setSpecificMatchType('AND');
+    setGenericTextOperator('word');
+    setSpecificTextOperator('word');
     setGenericSearchText('');
+    setGenericEntries([]);
     setSpecificSearchText('');
+    setSpecificEntries([]);
     setGenericOptionQuery('');
     setSpecificOptionQuery('');
     setTextFilters(defaultTextFilters());
@@ -359,9 +415,87 @@ export default function TransactionSearch({ initialFilterOptions }: TransactionS
     setter(values);
   };
 
+  const addEntry = (
+    value: string,
+    operator: SubjectTextOperator,
+    setter: Dispatch<SetStateAction<SubjectTextEntry[]>>,
+    resetInput?: () => void
+  ) => {
+    const term = value.trim();
+    if (!term) return;
+    setter((prev) => {
+      const exists = prev.some((entry) => entry.value === term && entry.operator === operator);
+      if (exists) return prev;
+      return [...prev, { id: `${Date.now()}-${Math.random()}`, value: term, operator }];
+    });
+    if (resetInput) resetInput();
+  };
+
+  const handleEntryKeyDown = (
+    event: KeyboardEvent<HTMLInputElement>,
+    value: string,
+    operator: SubjectTextOperator,
+    setter: Dispatch<SetStateAction<SubjectTextEntry[]>>,
+    resetInput: () => void
+  ) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      addEntry(value, operator, setter, resetInput);
+    }
+  };
+
+  const handleEntryRemove = (id: string, setter: Dispatch<SetStateAction<SubjectTextEntry[]>>) => {
+    setter((prev) => prev.filter((entry) => entry.id !== id));
+  };
+
+  const handleEntryValueChange = (
+    id: string,
+    newValue: string,
+    setter: Dispatch<SetStateAction<SubjectTextEntry[]>>
+  ) => {
+    setter((prev) =>
+      prev.map((entry) => (entry.id === id ? { ...entry, value: newValue } : entry))
+    );
+  };
+
+  const handleEntryOperatorChange = (
+    id: string,
+    newOperator: SubjectTextOperator,
+    setter: Dispatch<SetStateAction<SubjectTextEntry[]>>
+  ) => {
+    setter((prev) =>
+      prev.map((entry) => (entry.id === id ? { ...entry, operator: newOperator } : entry))
+    );
+  };
+
   const closeDetailModal = () => {
     setDetailOpen(false);
     setActiveTx(null);
+    setDetailEditing(false);
+    setActionError(null);
+  };
+
+  const handleUpdateSubmit = async (payload: TransactionEditorValues) => {
+    if (!activeTx) return;
+    setActionError(null);
+    try {
+      const response = await fetch(`/api/transactions/${activeTx.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error?.error || 'Failed to update transaction');
+      }
+      const updated = await response.json();
+      const normalized = transformTransaction(updated);
+      setActiveTx(normalized);
+      setTransactions((prev) => prev.map((tx) => (tx.id === normalized.id ? normalized : tx)));
+      setDetailEditing(false);
+    } catch (error: any) {
+      setActionError(error?.message || 'Failed to update transaction');
+    }
   };
 
   return (
@@ -419,14 +553,23 @@ export default function TransactionSearch({ initialFilterOptions }: TransactionS
               </div>
 
               {genericMode === 'text' ? (
-                <div className="space-y-2">
-                  <div className="grid grid-cols-1 sm:grid-cols-[2fr,1fr] gap-2">
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-stretch gap-2">
                     <input
                       type="text"
                       value={genericSearchText}
                       onChange={(e) => setGenericSearchText(e.target.value)}
-                      placeholder="Enter subject keywords"
-                      className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      onKeyDown={(e) =>
+                        handleEntryKeyDown(
+                          e,
+                          genericSearchText,
+                          genericTextOperator,
+                          setGenericEntries,
+                          () => setGenericSearchText('')
+                        )
+                      }
+                      placeholder="Type subject phrase"
+                      className="flex-1 min-w-[200px] border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     />
                     <select
                       value={genericTextOperator}
@@ -439,8 +582,59 @@ export default function TransactionSearch({ initialFilterOptions }: TransactionS
                         </option>
                       ))}
                     </select>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        addEntry(genericSearchText, genericTextOperator, setGenericEntries, () =>
+                          setGenericSearchText('')
+                        )
+                      }
+                      className="h-[44px] px-3 rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 flex items-center justify-center"
+                      aria-label="Add generic subject term"
+                    >
+                      <Plus className="w-4 h-4" />
+                    </button>
                   </div>
-                  <p className="text-xs text-gray-500">Leave blank to skip filtering by generic subject name.</p>
+
+                  {genericEntries.length > 0 && (
+                    <div className="space-y-2">
+                      {genericEntries.map((entry) => (
+                        <div
+                          key={entry.id}
+                          className="flex flex-wrap items-center gap-2 border border-gray-200 rounded-lg px-3 py-2"
+                        >
+                          <input
+                            type="text"
+                            value={entry.value}
+                            onChange={(e) => handleEntryValueChange(entry.id, e.target.value, setGenericEntries)}
+                            className="flex-1 min-w-[180px] border border-gray-200 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                          />
+                          <select
+                            value={entry.operator}
+                            onChange={(e) =>
+                              handleEntryOperatorChange(entry.id, e.target.value as SubjectTextOperator, setGenericEntries)
+                            }
+                            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                          >
+                            {SUBJECT_TEXT_OPERATOR_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() => handleEntryRemove(entry.id, setGenericEntries)}
+                            className="p-2 rounded-full text-gray-500 hover:bg-gray-100"
+                            aria-label="Remove generic subject filter"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-xs text-gray-500">Add one row per subject phrase with its own match style.</p>
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -508,14 +702,23 @@ export default function TransactionSearch({ initialFilterOptions }: TransactionS
               </div>
 
               {specificMode === 'text' ? (
-                <div className="space-y-2">
-                  <div className="grid grid-cols-1 sm:grid-cols-[2fr,1fr] gap-2">
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-stretch gap-2">
                     <input
                       type="text"
                       value={specificSearchText}
                       onChange={(e) => setSpecificSearchText(e.target.value)}
-                      placeholder="Enter specific subject keywords"
-                      className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      onKeyDown={(e) =>
+                        handleEntryKeyDown(
+                          e,
+                          specificSearchText,
+                          specificTextOperator,
+                          setSpecificEntries,
+                          () => setSpecificSearchText('')
+                        )
+                      }
+                      placeholder="Type specific subject phrase"
+                      className="flex-1 min-w-[200px] border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     />
                     <select
                       value={specificTextOperator}
@@ -528,8 +731,59 @@ export default function TransactionSearch({ initialFilterOptions }: TransactionS
                         </option>
                       ))}
                     </select>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        addEntry(specificSearchText, specificTextOperator, setSpecificEntries, () =>
+                          setSpecificSearchText('')
+                        )
+                      }
+                      className="h-[44px] px-3 rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 flex items-center justify-center"
+                      aria-label="Add specific subject term"
+                    >
+                      <Plus className="w-4 h-4" />
+                    </button>
                   </div>
-                  <p className="text-xs text-gray-500">Leave blank to skip filtering by specific subject text.</p>
+
+                  {specificEntries.length > 0 && (
+                    <div className="space-y-2">
+                      {specificEntries.map((entry) => (
+                        <div
+                          key={entry.id}
+                          className="flex flex-wrap items-center gap-2 border border-gray-200 rounded-lg px-3 py-2"
+                        >
+                          <input
+                            type="text"
+                            value={entry.value}
+                            onChange={(e) => handleEntryValueChange(entry.id, e.target.value, setSpecificEntries)}
+                            className="flex-1 min-w-[180px] border border-gray-200 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                          />
+                          <select
+                            value={entry.operator}
+                            onChange={(e) =>
+                              handleEntryOperatorChange(entry.id, e.target.value as SubjectTextOperator, setSpecificEntries)
+                            }
+                            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                          >
+                            {SUBJECT_TEXT_OPERATOR_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() => handleEntryRemove(entry.id, setSpecificEntries)}
+                            className="p-2 rounded-full text-gray-500 hover:bg-gray-100"
+                            aria-label="Remove specific subject filter"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-xs text-gray-500">Add one row per specific subject phrase with its own match style.</p>
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -737,6 +991,8 @@ export default function TransactionSearch({ initialFilterOptions }: TransactionS
                     className="hover:bg-gray-50 transition-colors cursor-pointer"
                     onClick={() => {
                       setActiveTx(transaction);
+                      setDetailEditing(false);
+                      setActionError(null);
                       setDetailOpen(true);
                     }}
                   >
@@ -843,11 +1099,11 @@ export default function TransactionSearch({ initialFilterOptions }: TransactionS
       {/* Detail Modal */}
       {detailOpen && activeTx && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4" onClick={closeDetailModal}>
-          <div
-            className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between border-b px-4 py-3">
+            <div
+              className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b px-4 py-3">
               <div>
                 <p className="text-xs text-gray-500">Transaction #{activeTx.srNo}</p>
                 <p className="text-base font-semibold text-gray-800 truncate">{activeTx.title || 'Untitled'}</p>
@@ -863,20 +1119,56 @@ export default function TransactionSearch({ initialFilterOptions }: TransactionS
             <div className="p-4 space-y-4">
               <TransactionDetailView transaction={activeTx as any} />
 
-              {activeTx.book && (
-                <div className="flex items-center justify-between border rounded-md p-3 bg-gray-50">
-                  <div>
-                    <p className="text-sm font-semibold text-gray-800">{activeTx.book.bookName}</p>
-                    <p className="text-xs text-gray-600">Library #{activeTx.book.libraryNumber}</p>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                {activeTx.book && (
+                  <div className="flex items-center justify-between border rounded-md p-3 bg-gray-50 flex-1">
+                    <div>
+                      <p className="text-sm font-semibold text-gray-800">{activeTx.book.bookName}</p>
+                      <p className="text-xs text-gray-600">Library #{activeTx.book.libraryNumber}</p>
+                    </div>
+                    <button
+                      onClick={() => router.push(`/books/${activeTx.book.id}`)}
+                      className="px-3 py-1.5 rounded-md text-sm font-medium text-white bg-blue-600 hover:bg-blue-700"
+                    >
+                      View Book Details
+                    </button>
                   </div>
+                )}
+
+                <div className="flex flex-wrap gap-2">
                   <button
-                    onClick={() => router.push(`/books/${activeTx.book.id}`)}
-                    className="px-3 py-1.5 rounded-md text-sm font-medium text-white bg-blue-600 hover:bg-blue-700"
+                    onClick={() => {
+                      setDetailEditing((prev) => !prev);
+                      setActionError(null);
+                    }}
+                    className="px-3 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50"
                   >
-                    View Book Details
+                    {detailEditing ? 'Close Editor' : 'Edit Transaction'}
                   </button>
                 </div>
+              </div>
+
+              {actionError && (
+                <div className="text-sm text-red-600 border border-red-200 bg-red-50 rounded-md px-3 py-2">
+                  {actionError}
+                </div>
               )}
+
+              {detailEditing && activeTxForEdit && (
+                <div className="border-t pt-4">
+                  <TransactionEditorForm
+                    key={activeTxForEdit.id}
+                    mode="edit"
+                    books={filterOptions.books}
+                    defaultBookId={activeTxForEdit.bookId || activeTxForEdit.book?.id}
+                    initialData={activeTxForEdit as any}
+                    onSubmit={handleUpdateSubmit}
+                    onCancel={() => setDetailEditing(false)}
+                    lockBookSelection
+                  />
+                </div>
+              )}
+
             </div>
           </div>
         </div>

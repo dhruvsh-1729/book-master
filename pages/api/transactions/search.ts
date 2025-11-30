@@ -15,12 +15,18 @@ interface FilterConfig {
 type SubjectMatchType = 'AND' | 'OR';
 type SubjectSearchMode = 'text' | 'exact';
 type SubjectTextOperator = 'contains' | 'startsWith' | 'endsWith' | 'equals' | 'word';
+interface SubjectTextFilter {
+  text: string;
+  operator?: SubjectTextOperator;
+}
 
 interface SubjectFilterInput {
   mode?: SubjectSearchMode;
   matchType?: SubjectMatchType;
   selectedIds?: string[];
   searchText?: string;
+  searchTextFilters?: SubjectTextFilter[];
+  searchTexts?: string[];
   operator?: SubjectTextOperator;
   caseSensitive?: boolean;
 }
@@ -49,6 +55,27 @@ function buildFieldFilter(filter: FilterConfig): any {
   
   const stringValue = String(value);
   const mode = caseSensitive ? undefined : 'insensitive';
+
+  const wordSearchFields = new Set(['title', 'remark', 'footNote', 'relevantParagraph']);
+  if (wordSearchFields.has(field)) {
+    const words = stringValue
+      .split(/\s+/)
+      .map((w) => w.trim())
+      .filter(Boolean);
+    if (!words.length) return {};
+    if (field === 'relevantParagraph') {
+      return {
+        AND: words.map((word) => ({
+          relevantParagraph: { string_contains: word } as any,
+        })),
+      };
+    }
+    return {
+      AND: words.map((word) => ({
+        [field]: { contains: word, mode },
+      })),
+    };
+  }
 
   switch (operator) {
     case 'contains':
@@ -132,7 +159,11 @@ function buildSubjectFilterConditions(
   const relationField = type === 'generic' ? 'genericSubjects' : 'specificSubjects';
   const nestedField = type === 'generic' ? 'genericSubject' : 'tag';
   const idField = type === 'generic' ? 'genericSubjectId' : 'tagId';
-  const mode = filter.mode || (filter.searchText ? 'text' : 'exact');
+  const hasText =
+    (filter.searchTextFilters && filter.searchTextFilters.length > 0) ||
+    (filter.searchTexts && filter.searchTexts.length > 0) ||
+    (filter.searchText && filter.searchText.trim().length > 0);
+  const mode = filter.mode || (hasText ? 'text' : 'exact');
 
   if (mode === 'exact') {
     const ids = (filter.selectedIds || []).filter(Boolean);
@@ -157,36 +188,71 @@ function buildSubjectFilterConditions(
     ];
   }
 
-  const text = filter.searchText?.trim();
-  if (!text) return [];
+  const textEntries: Array<{ text: string; operator: SubjectTextOperator }> = [];
 
-  if ((filter.operator || 'contains') === 'word') {
-    const words = text.split(/\s+/).filter(Boolean);
-    if (!words.length) return [];
-    return [
-      {
+  if (filter.searchTextFilters && filter.searchTextFilters.length) {
+    filter.searchTextFilters.forEach((entry) => {
+      if (!entry.text) return;
+      textEntries.push({
+        text: entry.text.trim(),
+        operator: entry.operator || filter.operator || 'contains',
+      });
+    });
+  } else {
+    const baseOperator = filter.operator || 'contains';
+    (filter.searchTexts || []).forEach((text) => {
+      const trimmed = text.trim();
+      if (trimmed) textEntries.push({ text: trimmed, operator: baseOperator });
+    });
+    if (filter.searchText && filter.searchText.trim()) {
+      textEntries.push({ text: filter.searchText.trim(), operator: baseOperator });
+    }
+  }
+
+  const normalizedTextEntries = textEntries.filter((entry) => entry.text);
+
+  if (!normalizedTextEntries.length) return [];
+
+  const textConditions = normalizedTextEntries
+    .map((entry) => {
+      const operator = entry.operator || 'contains';
+      if (operator === 'word') {
+        const words = entry.text.split(/\s+/).filter(Boolean);
+        if (!words.length) return null;
+        return {
+          [relationField]: {
+            some: {
+              [nestedField]: {
+                AND: words.map((word) => ({
+                  name: { contains: word, mode: filter.caseSensitive ? undefined : 'insensitive' },
+                })),
+              },
+            },
+          },
+        };
+      }
+      return {
         [relationField]: {
           some: {
             [nestedField]: {
-              AND: words.map((word) => ({
-                name: { contains: word, mode: filter.caseSensitive ? undefined : 'insensitive' },
-              })),
+              name: buildStringFilter(operator, entry.text, filter.caseSensitive),
             },
           },
         },
-      },
-    ];
+      };
+    })
+    .filter(Boolean) as Prisma.SummaryTransactionWhereInput[];
+
+  if (!textConditions.length) return [];
+
+  const textMatchType = filter.matchType || 'AND';
+  if (textMatchType === 'AND') {
+    return textConditions;
   }
 
   return [
     {
-      [relationField]: {
-        some: {
-          [nestedField]: {
-            name: buildStringFilter(filter.operator || 'contains', text, filter.caseSensitive),
-          },
-        },
-      },
+      OR: textConditions,
     },
   ];
 }
@@ -251,13 +317,6 @@ async function handlePost(req: NextApiRequest, res: NextApiResponse) {
   if (filters && filters.length) {
     filters.forEach((filter) => {
       if (!allowedFields.has(filter.field)) return;
-      if (filter.field === 'relevantParagraph') {
-        const val = String(filter.value ?? '');
-        if (val) {
-          andConditions.push({ relevantParagraph: { string_contains: val } as any });
-        }
-        return;
-      }
       if (filter.field === 'informationRating') {
         const val = String(filter.value ?? '').trim();
         if (val.toLowerCase() === 'null' || val === '') {
@@ -281,18 +340,9 @@ async function handlePost(req: NextApiRequest, res: NextApiResponse) {
     andConditions.length > 0
       ? {
           AND: andConditions,
-          // Require either a title or at least one specific subject
-          OR: [
-            { title: { not: null } },
-            { specificSubjects: { some: {} } },
-          ],
         }
       : {
           AND: [{ userId }],
-          OR: [
-            { title: { not: null } },
-            { specificSubjects: { some: {} } },
-          ],
         };
     const skip = (page - 1) * pageSize;
 

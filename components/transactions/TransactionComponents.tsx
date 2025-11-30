@@ -22,6 +22,8 @@ export type TransactionEditorValues = TransactionFormData & {
   conclusion?: string;
 };
 
+export type TransactionBook = Pick<BookMaster, 'id' | 'bookName' | 'libraryNumber'>;
+
 const LANGUAGES: Language[] = [
   { code: 'english', name: 'English', icon: '🇺🇸' },
   { code: 'hindi', name: 'Hindi', icon: '🇮🇳' },
@@ -101,7 +103,7 @@ const useRemoteSearch = <T extends { id: string; name: string }>(endpoint: strin
 
 export interface TransactionEditorFormProps {
   mode: 'create' | 'edit';
-  books: BookMaster[];
+  books: TransactionBook[];
   defaultBookId?: string;
   initialData?: SummaryTransaction;
   nextSrNo?: number;
