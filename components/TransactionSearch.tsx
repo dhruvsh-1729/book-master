@@ -10,7 +10,7 @@ import {
 } from './transactions/TransactionComponents';
 import debounce from 'lodash/debounce';
 
-type FilterOperator = 'contains' | 'equals' | 'notEquals' | 'startsWith' | 'endsWith' | 'gt' | 'lt' | 'gte' | 'lte';
+type FilterOperator = 'contains' | 'equals' | 'notEquals' | 'startsWith' | 'endsWith' | 'gt' | 'lt' | 'gte' | 'lte' | 'word';
 
 type SubjectSearchMode = 'text' | 'exact';
 type SubjectMatchType = 'AND' | 'OR';
