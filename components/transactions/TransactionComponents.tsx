@@ -658,9 +658,35 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
   );
 };
 
-export const TransactionDetailView: React.FC<{ transaction: SummaryTransaction }> = ({ transaction }) => {
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const highlightParagraphText = (text: string, terms: string[]) => {
+  if (!text || !terms.length) return text;
+
+  const escaped = terms.map((t) => escapeRegExp(t)).filter(Boolean);
+  if (!escaped.length) return text;
+
+  const regex = new RegExp(`(${escaped.join('|')})`, 'gi');
+  const lowerTerms = terms.map((t) => t.toLowerCase());
+
+  return text.split(regex).map((part, index) => {
+    const match = lowerTerms.includes(part.toLowerCase());
+    if (!match) return <React.Fragment key={index}>{part}</React.Fragment>;
+    return (
+      <mark key={index} className="bg-yellow-200 px-0.5">
+        {part}
+      </mark>
+    );
+  });
+};
+
+export const TransactionDetailView: React.FC<{ transaction: SummaryTransaction; highlightTerms?: string[] }> = ({
+  transaction,
+  highlightTerms = [],
+}) => {
   const paragraph = normalizeParagraph(transaction.relevantParagraph);
   const paragraphEntries = Object.entries(paragraph).filter(([_, value]) => value);
+  const normalizedHighlightTerms = highlightTerms.map((term) => term.trim()).filter(Boolean);
   const footNote = transaction.footNote?.trim();
 
   return (
@@ -751,7 +777,9 @@ export const TransactionDetailView: React.FC<{ transaction: SummaryTransaction }
             {paragraphEntries.map(([lang, value]) => (
               <div key={lang}>
                 <p className="text-xs uppercase tracking-wide text-gray-500">{lang}</p>
-                <p className="mt-1 whitespace-pre-wrap rounded-md bg-gray-50 p-3 text-sm text-gray-700">{value as string}</p>
+                <p className="mt-1 whitespace-pre-wrap rounded-md bg-gray-50 p-3 text-sm text-gray-700">
+                  {highlightParagraphText(value as string, normalizedHighlightTerms)}
+                </p>
               </div>
             ))}
           </div>

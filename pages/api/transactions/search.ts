@@ -50,43 +50,86 @@ function getCacheKey(params: SearchParams): string {
   return JSON.stringify(params);
 }
 
-const PARAGRAPH_LANG_KEYS = ['english', 'hindi', 'gujarati', 'sanskrit'];
+const GLOBAL_SEARCH_FIELDS = [
+  'title',
+  'informationRating',
+  'remark',
+  'footNote',
+  'keywords',
+  'summary',
+  'conclusion',
+  'pageNo',
+  'paragraphNo',
+];
 
-function buildParagraphSearchFilter(
-  text: string,
-  splitIntoWords = true
-): Prisma.SummaryTransactionWhereInput {
-  const terms = splitIntoWords
-    ? text
-        .split(/\s+/)
-        .map((w) => w.trim())
-        .filter(Boolean)
-    : [text.trim()].filter(Boolean);
+const normalizeParagraphTexts = (value: any, caseSensitive = false): string[] => {
+  if (!value) return [];
+  if (typeof value === 'string') {
+    const val = value.trim();
+    if (!val) return [];
+    return [caseSensitive ? val : val.toLowerCase()];
+  }
+  if (typeof value === 'object') {
+    return Object.values(value)
+      .filter((v) => typeof v === 'string' && v.trim())
+      .map((v) => {
+        const val = (v as string).trim();
+        return caseSensitive ? val : val.toLowerCase();
+      });
+  }
+  return [];
+};
 
-  if (!terms.length) return {};
+const paragraphMatchesFilter = (paragraph: any, filter: FilterConfig): boolean => {
+  const texts = normalizeParagraphTexts(paragraph, filter.caseSensitive);
+  if (!texts.length) return false;
+  const searchRaw = String(filter.value ?? '').trim();
+  if (!searchRaw) return false;
+  const searchValue = filter.caseSensitive ? searchRaw : searchRaw.toLowerCase();
 
-  const conditions = terms.map((term) => ({
-    OR: PARAGRAPH_LANG_KEYS.map((lang) => ({
-      relevantParagraph: {
-        path: [lang],
-        string_contains: term,
-      } as any,
-    })),
-  }));
+  const containsWord = (word: string) => texts.some((text) => text.includes(word));
 
-  if (conditions.length === 1) return conditions[0];
-  return { AND: conditions };
-}
+  switch (filter.operator) {
+    case 'startsWith':
+      return texts.some((text) => text.startsWith(searchValue));
+    case 'endsWith':
+      return texts.some((text) => text.endsWith(searchValue));
+    case 'equals':
+      return texts.some((text) => text === searchValue);
+    case 'lt':
+    case 'lte':
+    case 'gt':
+    case 'gte':
+      // Not meaningful for paragraph text; treat as no match
+      return false;
+    case 'word':
+    case 'contains':
+    default: {
+      const words = searchValue.split(/\s+/).filter(Boolean);
+      if (!words.length) return false;
+      return words.every((word) => containsWord(word));
+    }
+  }
+};
+
+const stringContains = (value: any, term: string): boolean => {
+  if (value === null || value === undefined) return false;
+  const normalized = String(value).toLowerCase();
+  return normalized.includes(term);
+};
+
+const matchesGlobalSearch = (transaction: any, searchTerm: string): boolean => {
+  const term = searchTerm.toLowerCase();
+  const baseMatch = GLOBAL_SEARCH_FIELDS.some((field) => stringContains((transaction as any)[field], term));
+  if (baseMatch) return true;
+  const paragraphTexts = normalizeParagraphTexts(transaction.relevantParagraph, false);
+  return paragraphTexts.some((text) => text.includes(term));
+};
 
 function buildFieldFilter(filter: FilterConfig): any {
   const { field, operator, value, caseSensitive = false } = filter;
   const stringValue = String(value);
   const mode = caseSensitive ? undefined : 'insensitive';
-
-  if (field === 'relevantParagraph') {
-    return buildParagraphSearchFilter(stringValue, true);
-  }
-
   const wordSearchFields = new Set(['title', 'remark', 'footNote']);
   if (wordSearchFields.has(field)) {
     const words = stringValue
@@ -127,9 +170,6 @@ function buildFieldFilter(filter: FilterConfig): any {
 
 function buildGlobalSearchFilter(searchTerm: string): any {
   const mode = 'insensitive';
-  const paragraphCondition = buildParagraphSearchFilter(searchTerm, false);
-  const paragraphClauses =
-    paragraphCondition && Object.keys(paragraphCondition).length > 0 ? [paragraphCondition] : [];
   return {
     OR: [
       { title: { contains: searchTerm, mode } },
@@ -141,7 +181,6 @@ function buildGlobalSearchFilter(searchTerm: string): any {
       { conclusion: { contains: searchTerm, mode } },
       { pageNo: { contains: searchTerm, mode } },
       { paragraphNo: { contains: searchTerm, mode } },
-      ...paragraphClauses,
     ],
   };
 }
@@ -289,11 +328,11 @@ async function handlePost(req: NextApiRequest, res: NextApiResponse) {
     const userId = getUserIdFromRequest(req);
     if (!userId) return res.status(401).json({ error: 'Authentication required' });
 
-    const {
-      page = 1,
-      pageSize = 20,
-      filters = [],
-      bookIds = [],
+  const {
+    page = 1,
+    pageSize = 20,
+    filters = [],
+    bookIds = [],
       genericSubjectIds = [],
       specificTagIds = [],
       globalSearch = '',
@@ -340,6 +379,7 @@ async function handlePost(req: NextApiRequest, res: NextApiResponse) {
 
   // Field filters (limited to key text fields)
   const allowedFields = new Set(['title', 'informationRating', 'remark', 'footNote', 'relevantParagraph']);
+  const paragraphFilters: FilterConfig[] = [];
   if (filters && filters.length) {
     filters.forEach((filter) => {
       if (!allowedFields.has(filter.field)) return;
@@ -352,13 +392,20 @@ async function handlePost(req: NextApiRequest, res: NextApiResponse) {
         }
         return;
       }
+      if (filter.field === 'relevantParagraph') {
+        paragraphFilters.push(filter);
+        return;
+      }
       andConditions.push(buildFieldFilter(filter));
     });
   }
 
+  const globalSearchTerm = globalSearch.trim();
+  const useManualGlobalSearch = Boolean(globalSearchTerm);
+
   // Global search across selected fields
-  if (globalSearch && globalSearch.trim()) {
-    andConditions.push(buildGlobalSearchFilter(globalSearch.trim()));
+  if (!useManualGlobalSearch && globalSearchTerm) {
+    andConditions.push(buildGlobalSearchFilter(globalSearchTerm));
   }
 
   // Build final where clause (only subject-based filters)
@@ -376,41 +423,67 @@ async function handlePost(req: NextApiRequest, res: NextApiResponse) {
     const validSortFields = ['srNo', 'title', 'createdAt', 'updatedAt', 'pageNo'];
     const finalSortBy = validSortFields.includes(sortBy) ? sortBy : 'srNo';
 
-    // Execute queries in parallel
-    const [transactions, totalCount] = await Promise.all([
+  // Execute queries in parallel
+  const requiresPostFilter = paragraphFilters.length > 0 || useManualGlobalSearch;
+  const queryOptions: Prisma.SummaryTransactionFindManyArgs = {
+    where: whereClause,
+    orderBy: { [finalSortBy]: sortOrder },
+    include: {
+      book: {
+        include: {
+          editor: true,
+        },
+      },
+      genericSubjects: {
+        include: {
+          genericSubject: true,
+        },
+      },
+      specificSubjects: {
+        include: {
+          tag: true,
+        },
+      },
+      images: true,
+      user: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+        },
+      },
+    },
+  };
+
+  let transactions: any[] = [];
+  let totalCount = 0;
+
+  if (requiresPostFilter) {
+    const baseTransactions = await prisma.summaryTransaction.findMany(queryOptions);
+    const filtered = baseTransactions.filter((tx) => {
+      if (paragraphFilters.length > 0) {
+        const allMatch = paragraphFilters.every((pf) => paragraphMatchesFilter(tx.relevantParagraph, pf));
+        if (!allMatch) return false;
+      }
+      if (useManualGlobalSearch && globalSearchTerm) {
+        if (!matchesGlobalSearch(tx, globalSearchTerm)) return false;
+      }
+      return true;
+    });
+    totalCount = filtered.length;
+    transactions = filtered.slice(skip, skip + pageSize);
+  } else {
+    const [rows, count] = await Promise.all([
       prisma.summaryTransaction.findMany({
-        where: whereClause,
+        ...queryOptions,
         skip,
         take: pageSize,
-        orderBy: { [finalSortBy]: sortOrder },
-        include: {
-          book: {
-            include: {
-              editor: true,
-            },
-          },
-          genericSubjects: {
-            include: {
-              genericSubject: true,
-            },
-          },
-          specificSubjects: {
-            include: {
-              tag: true,
-            },
-          },
-          images: true,
-          user: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-            },
-          },
-        },
       }),
       prisma.summaryTransaction.count({ where: whereClause }),
     ]);
+    transactions = rows;
+    totalCount = count;
+  }
 
     // Transform data for frontend
     const transformedTransactions = transactions.map(transaction => ({

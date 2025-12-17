@@ -147,6 +147,14 @@ export default function TransactionSearch({ initialFilterOptions }: TransactionS
     defaultTextFilters
   );
 
+  const paragraphHighlightTerms = useMemo(() => {
+    const value = textFilters.relevantParagraph.value || '';
+    return value
+      .split(/\s+/)
+      .map((term) => term.trim())
+      .filter(Boolean);
+  }, [textFilters.relevantParagraph.value]);
+
   const activeFieldFilters = useMemo<FilterConfig[]>(() => {
     const entries: FilterConfig[] = [];
     for (const field of TEXT_FILTER_FIELDS) {
@@ -1117,7 +1125,7 @@ export default function TransactionSearch({ initialFilterOptions }: TransactionS
             </div>
 
             <div className="p-4 space-y-4">
-              <TransactionDetailView transaction={activeTx as any} />
+              <TransactionDetailView transaction={activeTx as any} highlightTerms={paragraphHighlightTerms} />
 
               <div className="flex flex-wrap items-center justify-between gap-3">
                 {activeTx.book && (
