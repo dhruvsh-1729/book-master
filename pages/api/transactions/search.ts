@@ -50,26 +50,50 @@ function getCacheKey(params: SearchParams): string {
   return JSON.stringify(params);
 }
 
+const PARAGRAPH_LANG_KEYS = ['english', 'hindi', 'gujarati', 'sanskrit'];
+
+function buildParagraphSearchFilter(
+  text: string,
+  splitIntoWords = true
+): Prisma.SummaryTransactionWhereInput {
+  const terms = splitIntoWords
+    ? text
+        .split(/\s+/)
+        .map((w) => w.trim())
+        .filter(Boolean)
+    : [text.trim()].filter(Boolean);
+
+  if (!terms.length) return {};
+
+  const conditions = terms.map((term) => ({
+    OR: PARAGRAPH_LANG_KEYS.map((lang) => ({
+      relevantParagraph: {
+        path: [lang],
+        string_contains: term,
+      } as any,
+    })),
+  }));
+
+  if (conditions.length === 1) return conditions[0];
+  return { AND: conditions };
+}
+
 function buildFieldFilter(filter: FilterConfig): any {
   const { field, operator, value, caseSensitive = false } = filter;
-  
   const stringValue = String(value);
   const mode = caseSensitive ? undefined : 'insensitive';
 
-  const wordSearchFields = new Set(['title', 'remark', 'footNote', 'relevantParagraph']);
+  if (field === 'relevantParagraph') {
+    return buildParagraphSearchFilter(stringValue, true);
+  }
+
+  const wordSearchFields = new Set(['title', 'remark', 'footNote']);
   if (wordSearchFields.has(field)) {
     const words = stringValue
       .split(/\s+/)
       .map((w) => w.trim())
       .filter(Boolean);
     if (!words.length) return {};
-    if (field === 'relevantParagraph') {
-      return {
-        AND: words.map((word) => ({
-          relevantParagraph: { string_contains: word } as any,
-        })),
-      };
-    }
     return {
       AND: words.map((word) => ({
         [field]: { contains: word, mode },
@@ -103,6 +127,9 @@ function buildFieldFilter(filter: FilterConfig): any {
 
 function buildGlobalSearchFilter(searchTerm: string): any {
   const mode = 'insensitive';
+  const paragraphCondition = buildParagraphSearchFilter(searchTerm, false);
+  const paragraphClauses =
+    paragraphCondition && Object.keys(paragraphCondition).length > 0 ? [paragraphCondition] : [];
   return {
     OR: [
       { title: { contains: searchTerm, mode } },
@@ -114,8 +141,7 @@ function buildGlobalSearchFilter(searchTerm: string): any {
       { conclusion: { contains: searchTerm, mode } },
       { pageNo: { contains: searchTerm, mode } },
       { paragraphNo: { contains: searchTerm, mode } },
-      // attempt string search inside JSON paragraph
-      { relevantParagraph: { string_contains: searchTerm } as any },
+      ...paragraphClauses,
     ],
   };
 }

@@ -661,6 +661,7 @@ export const TransactionEditorForm: React.FC<TransactionEditorFormProps> = ({
 export const TransactionDetailView: React.FC<{ transaction: SummaryTransaction }> = ({ transaction }) => {
   const paragraph = normalizeParagraph(transaction.relevantParagraph);
   const paragraphEntries = Object.entries(paragraph).filter(([_, value]) => value);
+  const footNote = transaction.footNote?.trim();
 
   return (
     <div className="space-y-6">
@@ -761,6 +762,13 @@ export const TransactionDetailView: React.FC<{ transaction: SummaryTransaction }
         <div>
           <h4 className="text-sm font-medium text-gray-700 mb-1">Summary</h4>
           <p className="text-sm text-gray-700 whitespace-pre-wrap">{transaction.summary}</p>
+        </div>
+      )}
+
+      {footNote && (
+        <div>
+          <h4 className="text-sm font-medium text-gray-700 mb-1">Footnote</h4>
+          <p className="text-sm text-gray-700 whitespace-pre-wrap">{footNote}</p>
         </div>
       )}
 
