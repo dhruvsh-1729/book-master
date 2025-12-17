@@ -7,7 +7,7 @@ import { getUserIdFromRequest } from '@/lib/auth';
 
 interface FilterConfig {
   field: string;
-  operator: 'contains' | 'equals' | 'notEquals' | 'startsWith' | 'endsWith' | 'gt' | 'lt' | 'gte' | 'lte';
+  operator: 'contains' | 'equals' | 'notEquals' | 'startsWith' | 'endsWith' | 'word' | 'gt' | 'lt' | 'gte' | 'lte';
   value: string | number;
   caseSensitive?: boolean;
 }
@@ -486,11 +486,11 @@ async function handlePost(req: NextApiRequest, res: NextApiResponse) {
   }
 
     // Transform data for frontend
-    const transformedTransactions = transactions.map(transaction => ({
+    const transformedTransactions = transactions.map((transaction) => ({
       ...transaction,
       images: transaction.images || [],
-      genericSubjects: transaction.genericSubjects.map(gs => gs.genericSubject),
-      specificTags: transaction.specificSubjects.map(st => st.tag),
+      genericSubjects: transaction.genericSubjects.map((gs: any) => gs.genericSubject),
+      specificTags: transaction.specificSubjects.map((st: any) => st.tag),
     }));
 
     const result = {
