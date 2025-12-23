@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 export interface AsyncOption {
   value: string;
   label: string;
+  data?: any;
 }
 
 interface AsyncSelectProps {
@@ -11,9 +12,10 @@ interface AsyncSelectProps {
   fetchUrl: string;
   onChange: (option: AsyncOption | null) => void;
   value: AsyncOption | null;
+  onQueryChange?: (query: string) => void;
 }
 
-export const AsyncSelect: React.FC<AsyncSelectProps> = ({ label, placeholder, fetchUrl, onChange, value }) => {
+export const AsyncSelect: React.FC<AsyncSelectProps> = ({ label, placeholder, fetchUrl, onChange, value, onQueryChange }) => {
   const [query, setQuery] = useState('');
   const [options, setOptions] = useState<AsyncOption[]>([]);
   const [loading, setLoading] = useState(false);
@@ -32,6 +34,7 @@ export const AsyncSelect: React.FC<AsyncSelectProps> = ({ label, placeholder, fe
         const mapped = list.map((item: any) => ({
           value: item.id,
           label: item.name + (item.category ? ` (${item.category})` : ''),
+          data: item,
         }));
         if (active) setOptions(mapped);
       } catch (e) {
@@ -54,7 +57,10 @@ export const AsyncSelect: React.FC<AsyncSelectProps> = ({ label, placeholder, fe
       <input
         type="text"
         value={query}
-        onChange={(e) => setQuery(e.target.value)}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          onQueryChange?.(e.target.value);
+        }}
         placeholder={placeholderText}
         className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
       />
