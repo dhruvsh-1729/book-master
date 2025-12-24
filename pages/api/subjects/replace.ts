@@ -79,7 +79,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           }),
         ]);
 
-        return res.status(200).json({ updated: Math.max(created.count + deleted.count, ids.length) });
+        return res.status(200).json({ updated: ids.length });
       }
 
       const right = await prisma.tagMaster.findFirst({ where: { id: String(rightId) } });
@@ -119,7 +119,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }),
       ]);
 
-      return res.status(200).json({ updated: Math.max(created.count + deleted.count, ids.length) });
+      return res.status(200).json({ updated: ids.length });
     } catch (error: any) {
       console.error("POST /subjects/replace error", error);
       return res.status(500).json({ error: "Failed to replace subjects" });
@@ -199,7 +199,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       ]);
 
       return res.status(200).json({
-        updated: Math.max(created.count + deleted.count, ids.length),
+        updated: ids.length,
         targetId: target.id,
         createdTarget,
       });
@@ -263,7 +263,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     ]);
 
     return res.status(200).json({
-      updated: Math.max(created.count + deleted.count, ids.length),
+      updated: ids.length,
       targetId: target.id,
       createdTarget,
     });
