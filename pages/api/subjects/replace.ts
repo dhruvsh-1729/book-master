@@ -56,7 +56,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (!ids.length) return res.status(200).json({ updated: 0 });
 
         const existingRight = await prisma.summaryTransactionGenericSubject.findMany({
-          where: { summaryTransactionId: { in: ids }, genericSubjectId: String(rightId) },
+          where: {
+            summaryTransactionId: { in: ids },
+            genericSubjectId: String(rightId),
+            summaryTransaction: { userId },
+          },
           select: { summaryTransactionId: true },
         });
         const existingSet = new Set(existingRight.map((r) => r.summaryTransactionId));
@@ -67,7 +71,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             data: toCreate.map((id) => ({ summaryTransactionId: id, genericSubjectId: String(rightId) })),
           }),
           prisma.summaryTransactionGenericSubject.deleteMany({
-            where: { summaryTransactionId: { in: ids }, genericSubjectId: String(wrongId) },
+            where: {
+              summaryTransactionId: { in: ids },
+              genericSubjectId: String(wrongId),
+              summaryTransaction: { userId },
+            },
           }),
         ]);
 
@@ -88,7 +96,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (!ids.length) return res.status(200).json({ updated: 0 });
 
       const existingRight = await prisma.summaryTransactionSpecificTag.findMany({
-        where: { summaryTransactionId: { in: ids }, tagId: String(rightId) },
+        where: {
+          summaryTransactionId: { in: ids },
+          tagId: String(rightId),
+          summaryTransaction: { userId },
+        },
         select: { summaryTransactionId: true },
       });
       const existingSet = new Set(existingRight.map((r) => r.summaryTransactionId));
@@ -99,7 +111,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           data: toCreate.map((id) => ({ summaryTransactionId: id, tagId: String(rightId) })),
         }),
         prisma.summaryTransactionSpecificTag.deleteMany({
-          where: { summaryTransactionId: { in: ids }, tagId: String(wrongId) },
+          where: {
+            summaryTransactionId: { in: ids },
+            tagId: String(wrongId),
+            summaryTransaction: { userId },
+          },
         }),
       ]);
 
@@ -159,7 +175,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (!ids.length) return res.status(200).json({ updated: 0, targetId: target.id, createdTarget });
 
       const existingTargetLinks = await prisma.summaryTransactionSpecificTag.findMany({
-        where: { summaryTransactionId: { in: ids }, tagId: target.id },
+        where: {
+          summaryTransactionId: { in: ids },
+          tagId: target.id,
+          summaryTransaction: { userId },
+        },
         select: { summaryTransactionId: true },
       });
       const existingSet = new Set(existingTargetLinks.map((r) => r.summaryTransactionId));
@@ -170,7 +190,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           data: toCreate.map((id) => ({ summaryTransactionId: id, tagId: target!.id })),
         }),
         prisma.summaryTransactionGenericSubject.deleteMany({
-          where: { summaryTransactionId: { in: ids }, genericSubjectId: sourceId },
+          where: {
+            summaryTransactionId: { in: ids },
+            genericSubjectId: sourceId,
+            summaryTransaction: { userId },
+          },
         }),
       ]);
 
@@ -215,7 +239,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!ids.length) return res.status(200).json({ updated: 0, targetId: target.id, createdTarget });
 
     const existingTargetLinks = await prisma.summaryTransactionGenericSubject.findMany({
-      where: { summaryTransactionId: { in: ids }, genericSubjectId: target.id },
+      where: {
+        summaryTransactionId: { in: ids },
+        genericSubjectId: target.id,
+        summaryTransaction: { userId },
+      },
       select: { summaryTransactionId: true },
     });
     const existingSet = new Set(existingTargetLinks.map((r) => r.summaryTransactionId));
@@ -226,7 +254,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         data: toCreate.map((id) => ({ summaryTransactionId: id, genericSubjectId: target!.id })),
       }),
       prisma.summaryTransactionSpecificTag.deleteMany({
-        where: { summaryTransactionId: { in: ids }, tagId: sourceId },
+        where: {
+          summaryTransactionId: { in: ids },
+          tagId: sourceId,
+          summaryTransaction: { userId },
+        },
       }),
     ]);
 
