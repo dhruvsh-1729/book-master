@@ -23,12 +23,15 @@ const SubjectsPage: React.FC = () => {
   const [importing, setImporting] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [showReplaceModal, setShowReplaceModal] = useState(false);
-  const [replaceType, setReplaceType] = useState<'generic' | 'specific'>('generic');
+  const [replaceFromType, setReplaceFromType] = useState<'generic' | 'specific'>('generic');
+  const [replaceToType, setReplaceToType] = useState<'generic' | 'specific'>('generic');
   const [wrongSubject, setWrongSubject] = useState<AsyncOption | null>(null);
   const [rightSubject, setRightSubject] = useState<AsyncOption | null>(null);
   const [replaceLoading, setReplaceLoading] = useState(false);
   const [replaceError, setReplaceError] = useState<string | null>(null);
   const [replaceSummary, setReplaceSummary] = useState<string | null>(null);
+  const [targetName, setTargetName] = useState<string>('');
+  const [targetCategory, setTargetCategory] = useState<string>('');
 
   const fetchGenericSubjects = async () => {
     try {
@@ -51,8 +54,25 @@ const SubjectsPage: React.FC = () => {
   };
 
   const handleReplace = async () => {
-    if (!wrongSubject || !rightSubject) {
+    if (!wrongSubject) {
+      setReplaceError('Select the subject you want to replace/move');
+      return;
+    }
+
+    const sameType = replaceFromType === replaceToType;
+    const effectiveTargetName =
+      targetName?.trim() ||
+      rightSubject?.data?.name ||
+      rightSubject?.label ||
+      (!sameType ? wrongSubject?.data?.name || wrongSubject?.label || '' : '');
+
+    if (sameType && !rightSubject) {
       setReplaceError('Select both the incorrect and correct subjects');
+      return;
+    }
+
+    if (!sameType && !rightSubject && !effectiveTargetName) {
+      setReplaceError('Provide a target subject (select or enter a name)');
       return;
     }
     setReplaceLoading(true);
@@ -63,9 +83,12 @@ const SubjectsPage: React.FC = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          type: replaceType,
+          fromType: replaceFromType,
+          toType: replaceToType,
           wrongId: wrongSubject.value,
-          rightId: rightSubject.value,
+          rightId: rightSubject?.value,
+          rightName: effectiveTargetName || undefined,
+          rightCategory: replaceToType === 'specific' ? (targetCategory?.trim() || rightSubject?.data?.category) : undefined,
         }),
       });
       const data = await res.json();
@@ -286,15 +309,20 @@ const SubjectsPage: React.FC = () => {
             </button>
             <button
               onClick={() => {
-                setReplaceType(activeTab);
+                setReplaceFromType(activeTab);
+                setReplaceToType(activeTab);
+                setTargetName('');
+                setTargetCategory('');
                 setShowReplaceModal(true);
                 setReplaceError(null);
                 setReplaceSummary(null);
+                setWrongSubject(null);
+                setRightSubject(null);
               }}
               className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700"
             >
               <RefreshCw className="h-4 w-4 mr-2" />
-              Find & Replace
+              Find & Replace / Transfer
             </button>
           </div>
         }
@@ -415,38 +443,86 @@ const SubjectsPage: React.FC = () => {
               </button>
             </div>
             <div className="p-6 space-y-4">
-              <div className="flex items-center gap-3">
-                <label className="text-sm font-medium text-gray-700">Type</label>
-                <select
-                  value={replaceType}
-                  onChange={(e) => {
-                    setReplaceType(e.target.value as 'generic' | 'specific');
-                    setWrongSubject(null);
-                    setRightSubject(null);
-                    setReplaceSummary(null);
-                    setReplaceError(null);
-                  }}
-                  className="border border-gray-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                >
-                  <option value="generic">Generic Subject</option>
-                  <option value="specific">Specific Subject</option>
-                </select>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-700">From type</label>
+                  <select
+                    value={replaceFromType}
+                    onChange={(e) => {
+                      setReplaceFromType(e.target.value as 'generic' | 'specific');
+                      setWrongSubject(null);
+                      setTargetName('');
+                      setReplaceSummary(null);
+                      setReplaceError(null);
+                    }}
+                    className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="generic">Generic Subject</option>
+                    <option value="specific">Specific Subject</option>
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-700">To type</label>
+                  <select
+                    value={replaceToType}
+                    onChange={(e) => {
+                      const next = e.target.value as 'generic' | 'specific';
+                      setReplaceToType(next);
+                      setRightSubject(null);
+                      setTargetName('');
+                      setReplaceSummary(null);
+                      setReplaceError(null);
+                      if (next !== 'specific') {
+                        setTargetCategory('');
+                      }
+                    }}
+                    className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="generic">Generic Subject</option>
+                    <option value="specific">Specific Subject</option>
+                  </select>
+                </div>
               </div>
 
               <AsyncSelect
-                label={`Wrong ${replaceType === 'generic' ? 'Generic Subject' : 'Specific Subject'}`}
-                fetchUrl={replaceType === 'generic' ? '/api/subjects/generic' : '/api/subjects/tags'}
+                label={`From ${replaceFromType === 'generic' ? 'Generic Subject' : 'Specific Subject'}`}
+                fetchUrl={replaceFromType === 'generic' ? '/api/subjects/generic' : '/api/subjects/tags'}
                 value={wrongSubject}
                 onChange={setWrongSubject}
                 placeholder="Search the subject to replace"
               />
               <AsyncSelect
-                label={`Correct ${replaceType === 'generic' ? 'Generic Subject' : 'Specific Subject'}`}
-                fetchUrl={replaceType === 'generic' ? '/api/subjects/generic' : '/api/subjects/tags'}
+                label={`${replaceToType === 'generic' ? 'To Generic Subject' : 'To Specific Subject'}`}
+                fetchUrl={replaceToType === 'generic' ? '/api/subjects/generic' : '/api/subjects/tags'}
                 value={rightSubject}
-                onChange={setRightSubject}
-                placeholder="Search the replacement subject"
+                onChange={(opt) => {
+                  setRightSubject(opt);
+                  if (opt) {
+                    setTargetName(opt.data?.name || opt.label);
+                    if (replaceToType === 'specific') {
+                      setTargetCategory(opt.data?.category || '');
+                    }
+                  }
+                }}
+                onQueryChange={(value) => setTargetName(value)}
+                placeholder="Search the replacement/target subject (or type a new name)"
               />
+
+              {replaceToType === 'specific' && (
+                <FormInput
+                  label="Target Category (optional)"
+                  name="targetCategory"
+                  value={targetCategory}
+                  onChange={(e) => setTargetCategory(e.target.value)}
+                  placeholder="Enter category for new specific subject"
+                />
+              )}
+
+              {replaceFromType !== replaceToType && (
+                <p className="text-xs text-gray-600 bg-blue-50 border border-blue-100 rounded-md px-3 py-2">
+                  Moving subjects between Generic and Specific will remove the links from the source type and add them to the selected target type. If the target subject does not exist, it will be created using the name you select or type above.
+                </p>
+              )}
 
               {replaceError && <p className="text-sm text-red-600">{replaceError}</p>}
               {replaceSummary && <p className="text-sm text-green-700">{replaceSummary}</p>}
