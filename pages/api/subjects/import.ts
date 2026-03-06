@@ -1,6 +1,12 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import prisma from "@/lib/prisma";
 import { parse } from "csv-parse/sync";
+import {
+  buildCaseInsensitiveNameFilter,
+  normalizeCategory,
+  normalizeOptionalText,
+  normalizeSubjectName,
+} from "@/lib/subjects/normalization";
 
 const toStr = (v: unknown, fallback = ""): string =>
   typeof v === "string" ? v : Array.isArray(v) ? (v[0] ?? fallback) : fallback;
@@ -46,17 +52,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         normalized[normalizeKey(key)] = row[key];
       }
 
-      const name = toStr(normalized["name"]);
+      const name = normalizeSubjectName(toStr(normalized["name"]));
       if (!truthy(name)) continue;
 
-      const description = toStr(normalized["description"]) || null;
+      const description = normalizeOptionalText(toStr(normalized["description"]) || null);
 
       if (type === "generic") {
-        const existing = await prisma.genericSubjectMaster.findUnique({ where: { name } });
+        const existing = await prisma.genericSubjectMaster.findFirst({
+          where: { name: buildCaseInsensitiveNameFilter(name) },
+        });
         if (existing) {
           await prisma.genericSubjectMaster.update({
             where: { id: existing.id },
-            data: { description },
+            data: { name, description },
           });
           updated++;
         } else {
@@ -64,12 +72,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           created++;
         }
       } else {
-        const category = toStr(normalized["category"]) || null;
-        const existing = await prisma.tagMaster.findUnique({ where: { name } });
+        const category = normalizeCategory(toStr(normalized["category"]) || null);
+        const existing = await prisma.tagMaster.findFirst({
+          where: { name: buildCaseInsensitiveNameFilter(name) },
+        });
         if (existing) {
           await prisma.tagMaster.update({
             where: { id: existing.id },
-            data: { description, category },
+            data: { name, description, category },
           });
           updated++;
         } else {
