@@ -1,6 +1,12 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getUserIdFromRequest } from "@/lib/auth";
 import prisma from "@/lib/prisma";
+import {
+  buildCaseInsensitiveNameFilter,
+  normalizeCategory,
+  normalizeOptionalText,
+  normalizeSubjectName,
+} from "@/lib/subjects/normalization";
 
 type SubjectType = "generic" | "specific";
 
@@ -130,7 +136,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   try {
     const isGenericToSpecific = sourceType === "generic" && targetType === "specific";
     const sourceId = String(wrongId);
-    const desiredName = String(rightName || "").trim();
+    const desiredName = normalizeSubjectName(String(rightName || ""));
 
     if (!sourceId) {
       return res.status(400).json({ error: "Source subject is required" });
@@ -150,15 +156,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         : null;
 
       if (!target) {
-        const targetName = desiredName || source.name;
-        const existing = await prisma.tagMaster.findFirst({ where: { name: targetName } });
+        const targetName = desiredName || normalizeSubjectName(source.name);
+        const existing = await prisma.tagMaster.findFirst({
+          where: { name: buildCaseInsensitiveNameFilter(targetName) },
+        });
         target =
           existing ||
           (await prisma.tagMaster.create({
             data: {
               name: targetName,
-              description: source.description ?? null,
-              category: rightCategory ? String(rightCategory) : null,
+              description: normalizeOptionalText(source.description),
+              category: normalizeCategory(rightCategory ? String(rightCategory) : null),
             },
           }));
         createdTarget = !existing;
@@ -215,14 +223,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       : null;
 
     if (!target) {
-      const targetName = desiredName || source.name;
-      const existing = await prisma.genericSubjectMaster.findFirst({ where: { name: targetName } });
+      const targetName = desiredName || normalizeSubjectName(source.name);
+      const existing = await prisma.genericSubjectMaster.findFirst({
+        where: { name: buildCaseInsensitiveNameFilter(targetName) },
+      });
       target =
         existing ||
         (await prisma.genericSubjectMaster.create({
           data: {
             name: targetName,
-            description: source.description ?? null,
+            description: normalizeOptionalText(source.description),
           },
         }));
       createdTarget = !existing;
