@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "migrate:subjects:lowercase": "node scripts/migrate-subjects-lowercase.js"
   },
   "dependencies": {
     "@prisma/client": "^6.15.0",
