@@ -1,6 +1,12 @@
 // pages/api/subjects/tags/[id].ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import prisma from "@/lib/prisma";
+import {
+  buildCaseInsensitiveNameFilter,
+  normalizeCategory,
+  normalizeOptionalText,
+  normalizeSubjectName,
+} from "@/lib/subjects/normalization";
 
 const toStr = (v: unknown, fallback = ""): string =>
   typeof v === "string" ? v : Array.isArray(v) ? (v[0] ?? fallback) : fallback;
@@ -24,15 +30,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   } else if (req.method === "PUT") {
     try {
       const { name, description, category } = req.body ?? {};
-      if (!name || !String(name).trim())
+      const normalizedName = normalizeSubjectName(String(name || ""));
+      if (!normalizedName)
         return res.status(400).json({ error: "Name is required" });
+
+      const duplicate = await prisma.tagMaster.findFirst({
+        where: {
+          id: { not: id },
+          name: buildCaseInsensitiveNameFilter(normalizedName),
+        },
+        select: { id: true },
+      });
+      if (duplicate) {
+        return res.status(400).json({ error: "Tag name already exists" });
+      }
 
       const updated = await prisma.tagMaster.update({
         where: { id },
         data: {
-          name: String(name).trim(),
-          description: description ?? null,
-          category: category ?? null,
+          name: normalizedName,
+          description: normalizeOptionalText(description),
+          category: normalizeCategory(category),
         },
         include: { _count: { select: { summaryTransactions: true } } },
       });
