@@ -136,6 +136,30 @@ export interface TagsResponse {
   pagination: PaginationInfo;
 }
 
+export interface AISubjectSuggestion {
+  name: string;
+  subjectId?: string | null;
+  description?: string | null;
+  category?: string | null;
+  reason: string;
+  source: 'existing' | 'new';
+  selected?: boolean;
+}
+
+export interface SubjectSuggestionResponse {
+  genericSuggestions: AISubjectSuggestion[];
+  specificSuggestions: AISubjectSuggestion[];
+  meta?: {
+    usedFallback?: boolean;
+    model?: string;
+    title?: string;
+    candidateCounts?: {
+      generic: number;
+      specific: number;
+    };
+  };
+}
+
 export interface DashboardStats {
   totalBooks: number;
   totalTransactions: number;
