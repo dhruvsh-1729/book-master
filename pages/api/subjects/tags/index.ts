@@ -2,6 +2,12 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import prisma from "@/lib/prisma";
 import { getUserIdFromRequest } from "@/lib/auth";
+import {
+  buildCaseInsensitiveNameFilter,
+  normalizeCategory,
+  normalizeOptionalText,
+  normalizeSubjectName,
+} from "@/lib/subjects/normalization";
 
 const toStr = (v: unknown, fallback = ""): string =>
   typeof v === "string" ? v : Array.isArray(v) ? (v[0] ?? fallback) : fallback;
@@ -68,14 +74,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   } else if (req.method === "POST") {
     try {
       const { name, description, category } = req.body ?? {};
-      if (!name || !String(name).trim())
+      const normalizedName = normalizeSubjectName(String(name || ""));
+      if (!normalizedName)
         return res.status(400).json({ error: "Name is required" });
+
+      const existing = await prisma.tagMaster.findFirst({
+        where: { name: buildCaseInsensitiveNameFilter(normalizedName) },
+        select: { id: true },
+      });
+      if (existing) {
+        return res.status(400).json({ error: "Tag name already exists" });
+      }
 
       const tag = await prisma.tagMaster.create({
         data: {
-          name: String(name).trim(),
-          description: description ?? null,
-          category: category ?? null,
+          name: normalizedName,
+          description: normalizeOptionalText(description),
+          category: normalizeCategory(category),
         },
         include: { _count: { select: { summaryTransactions: true } } },
       });
