@@ -1,6 +1,11 @@
 // pages/api/subjects/generic/[id].ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import prisma from "@/lib/prisma";
+import {
+  buildCaseInsensitiveNameFilter,
+  normalizeOptionalText,
+  normalizeSubjectName,
+} from "@/lib/subjects/normalization";
 
 const toStr = (v: unknown, fallback = ""): string =>
   typeof v === "string" ? v : Array.isArray(v) ? (v[0] ?? fallback) : fallback;
@@ -56,14 +61,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         name?: string;
         description?: string | null;
       };
-      if (!name || !String(name).trim())
+      const normalizedName = normalizeSubjectName(String(name || ""));
+      if (!normalizedName)
         return res.status(400).json({ error: "Name is required" });
+
+      const duplicate = await prisma.genericSubjectMaster.findFirst({
+        where: {
+          id: { not: id },
+          name: buildCaseInsensitiveNameFilter(normalizedName),
+        },
+        select: { id: true },
+      });
+      if (duplicate) {
+        return res.status(400).json({ error: "Generic subject name already exists" });
+      }
 
       const updated = await prisma.genericSubjectMaster.update({
         where: { id },
         data: {
-          name: String(name).trim(),
-          description: description ?? null,
+          name: normalizedName,
+          description: normalizeOptionalText(description),
         },
         include: {
           _count: { select: { summaryTransactions: true } },
