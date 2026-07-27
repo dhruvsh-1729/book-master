@@ -65,14 +65,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             updatedAt: true,
             editor: true,
             images: true,
+            _count: {
+              select: {
+                transactions: true,
+              },
+            },
           },
         }),
         prisma.bookMaster.count({ where }),
       ]);
 
       const normalized = books.map((book: any) => {
-        const { editor, images, ...rest } = book;
-        return { ...rest, editors: editor ?? [], images: images ?? [] };
+        const { editor, images, _count, ...rest } = book;
+        return {
+          ...rest,
+          editors: editor ?? [],
+          images: images ?? [],
+          _count: {
+            summaryTransactions: _count?.transactions ?? 0,
+            transactions: _count?.transactions ?? 0,
+          },
+        };
       });
 
       return res.status(200).json({
@@ -182,12 +195,25 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             updatedAt: true,
             editor: true,
             images: true,
+            _count: {
+              select: {
+                transactions: true,
+              },
+            },
           },
         });
       });
 
-      const { editor: createdEditors, images: createdImages, ...rest } = (created as any) || {};
-      return res.status(201).json({ ...rest, editors: createdEditors ?? [], images: createdImages ?? [] });
+      const { editor: createdEditors, images: createdImages, _count, ...rest } = (created as any) || {};
+      return res.status(201).json({
+        ...rest,
+        editors: createdEditors ?? [],
+        images: createdImages ?? [],
+        _count: {
+          summaryTransactions: _count?.transactions ?? 0,
+          transactions: _count?.transactions ?? 0,
+        },
+      });
     } catch (e: any) {
       console.error("POST /books error", e);
       return res.status(500).json({ error: "Failed to create book" });

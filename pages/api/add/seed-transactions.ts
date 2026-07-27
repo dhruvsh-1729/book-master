@@ -3,9 +3,12 @@ import prisma from "@/lib/prisma";
 import { getUserIdFromRequest } from "@/lib/auth";
 import {
   createDeepSeekJsonCompletion,
+  createSarvamJsonCompletion,
   DEEPSEEK_MODEL,
   hasDeepSeekKey,
+  hasSarvamKey,
   parseJsonObjectFromAi,
+  SARVAM_MODEL,
 } from "@/lib/services/deepseek.service";
 import { normalizeSubjectName, normalizeWhitespace } from "@/lib/subjects/normalization";
 import {
@@ -62,6 +65,15 @@ const clip = (value: unknown, maxLength: number) => {
 };
 
 const extractJsonArray = (value: unknown) => (Array.isArray(value) ? value : []);
+
+const hasUsefulAiDraft = (item: any) =>
+  Boolean(
+    clip(item?.title, 180) ||
+      clip(item?.summary, 1800) ||
+      clip(item?.conclusion, 900) ||
+      extractJsonArray(item?.genericSubjects).length ||
+      extractJsonArray(item?.specificSubjects).length
+  );
 
 const tokenize = (value: string) =>
   Array.from(
@@ -308,34 +320,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       ),
       meta: {
         usedFallback: true,
-        model: hasDeepSeekKey() ? DEEPSEEK_MODEL : "heuristic-only",
+        provider: "heuristic",
+        model: hasSarvamKey() ? SARVAM_MODEL : hasDeepSeekKey() ? DEEPSEEK_MODEL : "heuristic-only",
       },
     };
 
-    if (!hasDeepSeekKey()) {
-      return res.status(200).json(fallback);
-    }
-
-    try {
-      const response = await createDeepSeekJsonCompletion({
-        messages: [
-          {
-            role: "system",
-            content: promptMap.get("add_pdf_system") || "Respond with valid json only.",
-          },
-          {
-            role: "user",
-            content: buildPrompt({ sections, genericCandidates, specificCandidates, prompts: promptMap }),
-          },
-        ],
-        maxTokens: Math.min(MAX_AI_TOKENS, 1000 + sections.length * 520),
-        temperature: 0.2,
+    const materializeTransactions = (parsedTransactions: any[]) => {
+      const missingOrBad = sections.filter((section) => {
+        const match = parsedTransactions.find((item: any) => String(item?.localId) === section.localId);
+        return !match || !hasUsefulAiDraft(match);
       });
+      if (missingOrBad.length) {
+        throw new Error(`AI response missed or returned weak data for ${missingOrBad.length} split(s)`);
+      }
 
-      const parsed = parseJsonObjectFromAi(response.content);
-      const parsedTransactions = extractJsonArray(parsed?.transactions);
-
-      const transactions = sections.map((section) => {
+      return sections.map((section) => {
         const match = parsedTransactions.find((item: any) => String(item?.localId) === section.localId) || {};
         const fallbackDraft = fallbackTransaction(
           section,
@@ -364,19 +363,79 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           specificSubjects: specificSubjects.length ? specificSubjects : fallbackDraft.specificSubjects,
         };
       });
+    };
 
-      return res.status(200).json({
+    const messages = [
+      {
+        role: "system" as const,
+        content: promptMap.get("add_pdf_system") || "Respond with valid json only.",
+      },
+      {
+        role: "user" as const,
+        content: buildPrompt({ sections, genericCandidates, specificCandidates, prompts: promptMap }),
+      },
+    ];
+    const maxTokens = Math.min(MAX_AI_TOKENS, 1000 + sections.length * 520);
+    const attemptedProviders: string[] = [];
+    let lastProviderError = "";
+
+    const runProvider = async (provider: "sarvam" | "deepseek") => {
+      attemptedProviders.push(provider);
+      const response =
+        provider === "sarvam"
+          ? await createSarvamJsonCompletion({
+              messages,
+              maxTokens,
+              temperature: 0.2,
+            })
+          : await createDeepSeekJsonCompletion({
+              messages,
+              maxTokens,
+              temperature: 0.2,
+            });
+
+      const parsed = parseJsonObjectFromAi(response.content);
+      const parsedTransactions = extractJsonArray(parsed?.transactions);
+      const transactions = materializeTransactions(parsedTransactions);
+
+      return {
         transactions,
         meta: {
           usedFallback: false,
-          model: response.model || DEEPSEEK_MODEL,
+          provider,
+          attemptedProviders,
+          model: response.model || (provider === "sarvam" ? SARVAM_MODEL : DEEPSEEK_MODEL),
           usage: response.usage,
         },
-      });
-    } catch (error) {
-      console.error("DeepSeek PDF draft fallback", error);
-      return res.status(200).json(fallback);
+      };
+    };
+
+    if (hasSarvamKey()) {
+      try {
+        return res.status(200).json(await runProvider("sarvam"));
+      } catch (error: any) {
+        lastProviderError = error?.message || "Sarvam generation failed";
+        console.warn("Sarvam PDF draft fallback to DeepSeek", error);
+      }
     }
+
+    if (hasDeepSeekKey()) {
+      try {
+        return res.status(200).json(await runProvider("deepseek"));
+      } catch (error: any) {
+        lastProviderError = error?.message || "DeepSeek generation failed";
+        console.error("DeepSeek PDF draft fallback", error);
+      }
+    }
+
+    return res.status(200).json({
+      ...fallback,
+      meta: {
+        ...fallback.meta,
+        attemptedProviders,
+        providerError: lastProviderError || undefined,
+      },
+    });
   } catch (error) {
     console.error("POST /add/seed-transactions error", error);
     return res.status(500).json({ error: "Failed to generate transaction drafts" });

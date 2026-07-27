@@ -28,7 +28,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     try {
       const includeTransactions = toStr(req.query.includeTransactions) === "true";
 
-      const include: any = { editor: true, images: true };
+      const include: any = {
+        editor: true,
+        images: true,
+        _count: {
+          select: {
+            transactions: true,
+          },
+        },
+      };
       if (includeTransactions) {
         include.transactions = {
           orderBy: [{ srNo: "asc" }],
@@ -56,10 +64,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
 
       if (!book) return res.status(404).json({ error: "Book not found" });
-      const { editor, transactions, ...rest } = book as any;
+      const { editor, transactions, _count, ...rest } = book as any;
       const payload: any = {
         ...rest,
         editors: editor ?? [],
+        _count: {
+          summaryTransactions: _count?.transactions ?? 0,
+          transactions: _count?.transactions ?? 0,
+        },
       };
       if (includeTransactions) {
         payload.summaryTransactions = (transactions ?? []).map(mapSummaryTransaction);
@@ -162,12 +174,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
         return tx.bookMaster.findUnique({
           where: { id },
-          include: { editor: true },
+          include: {
+            editor: true,
+            _count: {
+              select: {
+                transactions: true,
+              },
+            },
+          },
         });
       });
 
-      const { editor: updatedEditors, ...rest } = (updated as any) || {};
-      return res.status(200).json({ ...rest, editors: updatedEditors ?? [] });
+      const { editor: updatedEditors, _count, ...rest } = (updated as any) || {};
+      return res.status(200).json({
+        ...rest,
+        editors: updatedEditors ?? [],
+        _count: {
+          summaryTransactions: _count?.transactions ?? 0,
+          transactions: _count?.transactions ?? 0,
+        },
+      });
     } catch (e: any) {
       console.error("PUT /books/[id] error", e);
       return res.status(500).json({ error: "Failed to update book" });
@@ -183,13 +209,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
       const summaryIds = txIds.map((t) => t.id);
 
+      if (summaryIds.length) {
+        return res.status(409).json({
+          error: `Cannot delete this book because it has ${summaryIds.length} attached summary transaction${
+            summaryIds.length === 1 ? "" : "s"
+          }. Remove or move those transactions first.`,
+          transactionCount: summaryIds.length,
+        });
+      }
+
       await prisma.$transaction(async (tx) => {
-        if (summaryIds.length) {
-          await tx.transactionImage.deleteMany({ where: { summaryTransactionId: { in: summaryIds } } });
-          await tx.summaryTransactionSpecificTag.deleteMany({ where: { summaryTransactionId: { in: summaryIds } } });
-          await tx.summaryTransactionGenericSubject.deleteMany({ where: { summaryTransactionId: { in: summaryIds } } });
-          await tx.summaryTransaction.deleteMany({ where: { id: { in: summaryIds } } });
-        }
         await tx.bookImage.deleteMany({ where: { bookId: id } });
         await tx.bookEditor.deleteMany({ where: { bookId: id } });
         await tx.bookMaster.delete({ where: { id } });

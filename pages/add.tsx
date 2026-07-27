@@ -25,6 +25,7 @@ import {
 type ExtractedPage = {
   pageNumber: number;
   text: string;
+  thumbnailDataUrl: string;
 };
 
 type AddPromptTemplateView = {
@@ -56,6 +57,8 @@ type DraftTransaction = {
   newGenericName: string;
   newSpecificName: string;
   newSpecificCategory: string;
+  aiStatus: "idle" | "loading" | "ready" | "error";
+  aiError?: string;
 };
 
 type BookEditorFormRow = BookFormData["editors"][number];
@@ -102,9 +105,10 @@ const parsePdf = async (file: File) => {
   try {
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
       const page = await pdf.getPage(pageNumber);
+      const baseViewport = page.getViewport({ scale: 1 });
+      let thumbnailDataUrl = "";
 
       if (pageNumber === 1) {
-        const baseViewport = page.getViewport({ scale: 1 });
         const scale = Math.min(1.8, Math.max(0.8, 760 / baseViewport.width));
         const viewport = page.getViewport({ scale });
         const canvas = document.createElement("canvas");
@@ -118,13 +122,24 @@ const parsePdf = async (file: File) => {
         }
       }
 
+      const thumbScale = Math.min(0.75, Math.max(0.28, 220 / baseViewport.width));
+      const thumbViewport = page.getViewport({ scale: thumbScale });
+      const thumbCanvas = document.createElement("canvas");
+      const thumbContext = thumbCanvas.getContext("2d");
+      if (thumbContext) {
+        thumbCanvas.width = Math.floor(thumbViewport.width);
+        thumbCanvas.height = Math.floor(thumbViewport.height);
+        await page.render({ canvasContext: thumbContext, viewport: thumbViewport }).promise;
+        thumbnailDataUrl = thumbCanvas.toDataURL("image/webp", 0.58);
+      }
+
       const textContent = await page.getTextContent();
       const text = textContent.items
         .map((item: any) => ("str" in item ? item.str : ""))
         .join(" ")
         .replace(/\s+/g, " ")
         .trim();
-      pages.push({ pageNumber, text });
+      pages.push({ pageNumber, text, thumbnailDataUrl });
       if (typeof page.cleanup === "function") {
         page.cleanup();
       }
@@ -152,17 +167,16 @@ const parsePdf = async (file: File) => {
   return { pages, coverDataUrl, coverBlob };
 };
 
-const buildDrafts = (pages: ExtractedPage[], pagesPerSplit: number): DraftTransaction[] => {
-  const cleanPages = pages.filter((page) => page.text.trim());
-  const chunks: ExtractedPage[][] = [];
-  for (let i = 0; i < cleanPages.length; i += pagesPerSplit) {
-    chunks.push(cleanPages.slice(i, i + pagesPerSplit));
-  }
-
-  return chunks.map((chunk, index) => {
+const buildDraftsFromSections = (sections: ExtractedPage[][]): DraftTransaction[] => {
+  return sections.map((chunk, index) => {
     const pageStart = chunk[0]?.pageNumber || index + 1;
     const pageEnd = chunk[chunk.length - 1]?.pageNumber || pageStart;
     const pageNo = pageStart === pageEnd ? String(pageStart) : `${pageStart}-${pageEnd}`;
+    const extractedText = chunk
+      .map((page) => `--- Page ${page.pageNumber} ---\n${page.text || ""}`)
+      .join("\n\n")
+      .trim();
+
     return {
       id: createLocalId(),
       srNo: index + 1,
@@ -170,7 +184,7 @@ const buildDrafts = (pages: ExtractedPage[], pagesPerSplit: number): DraftTransa
       pageEnd,
       pageNo,
       paragraphNo: "",
-      extractedText: chunk.map((page) => page.text).join("\n\n"),
+      extractedText,
       title: "",
       keywords: "",
       summary: "",
@@ -184,6 +198,7 @@ const buildDrafts = (pages: ExtractedPage[], pagesPerSplit: number): DraftTransa
       newGenericName: "",
       newSpecificName: "",
       newSpecificCategory: "",
+      aiStatus: "idle",
     };
   });
 };
@@ -261,7 +276,7 @@ const AddPage: React.FC = () => {
   const [pages, setPages] = useState<ExtractedPage[]>([]);
   const [coverPreview, setCoverPreview] = useState("");
   const [drafts, setDrafts] = useState<DraftTransaction[]>([]);
-  const [pagesPerSplit, setPagesPerSplit] = useState(3);
+  const [splitIndices, setSplitIndices] = useState<Set<number>>(new Set());
   const [busyMessage, setBusyMessage] = useState("");
   const [alert, setAlert] = useState<{ type: "success" | "error" | "warning" | "info"; message: string } | null>(null);
   const [seeding, setSeeding] = useState(false);
@@ -276,6 +291,21 @@ const AddPage: React.FC = () => {
     () => drafts.filter((draft) => draft.subjectReviewStatus === "needs_review").length,
     [drafts]
   );
+
+  const manualSections = useMemo(() => {
+    if (!pages.length) return [] as ExtractedPage[][];
+    const cuts = Array.from(splitIndices)
+      .filter((position) => position >= 0 && position < pages.length - 1)
+      .sort((a, b) => a - b);
+    const sections: ExtractedPage[][] = [];
+    let start = 0;
+    for (const cut of cuts) {
+      sections.push(pages.slice(start, cut + 1));
+      start = cut + 1;
+    }
+    sections.push(pages.slice(start));
+    return sections.filter((section) => section.length);
+  }, [pages, splitIndices]);
 
   useEffect(() => {
     const loadPrompts = async () => {
@@ -337,7 +367,7 @@ const AddPage: React.FC = () => {
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data?.error || "Failed to save prompts");
       setPrompts(data.prompts || prompts);
-      setAlert({ type: "success", message: "AI prompts saved. The next DeepSeek generation will use the updated prompts." });
+      setAlert({ type: "success", message: "AI prompts saved. The next generation request will use the updated prompts." });
     } catch (error: any) {
       setPromptError(error?.message || "Failed to save prompts");
     } finally {
@@ -416,9 +446,12 @@ const AddPage: React.FC = () => {
         if (updateResponse.ok) setCreatedBook(updated as BookMaster);
       }
 
-      const nextDrafts = buildDrafts(parsed.pages, pagesPerSplit);
-      setDrafts(nextDrafts);
-      setAlert({ type: "success", message: `Book saved. ${parsed.pages.length} page(s) extracted.` });
+      setSplitIndices(new Set());
+      setDrafts([]);
+      setAlert({
+        type: "success",
+        message: `Book saved. ${parsed.pages.length} page(s) extracted. Review the pages and add split cuts before creating transactions.`,
+      });
     } catch (error: any) {
       setAlert({ type: "error", message: error?.message || "Failed to prepare PDF import." });
     } finally {
@@ -426,10 +459,39 @@ const AddPage: React.FC = () => {
     }
   };
 
-  const regenerateSplits = () => {
-    if (!pages.length) return;
-    setDrafts(buildDrafts(pages, pagesPerSplit));
-    setAlert({ type: "info", message: "Splits regenerated from the extracted PDF text." });
+  const resetDraftsAfterSplitChange = () => {
+    if (drafts.length) {
+      setAlert({ type: "warning", message: "Split cuts changed. Create transaction drafts again before saving." });
+    }
+    setDrafts([]);
+  };
+
+  const toggleSplit = (position: number) => {
+    setSplitIndices((prev) => {
+      const next = new Set(prev);
+      if (next.has(position)) {
+        next.delete(position);
+      } else {
+        next.add(position);
+      }
+      return next;
+    });
+    resetDraftsAfterSplitChange();
+  };
+
+  const clearSplitCuts = () => {
+    setSplitIndices(new Set());
+    resetDraftsAfterSplitChange();
+  };
+
+  const createDraftsFromManualSplits = () => {
+    if (!manualSections.length) {
+      setAlert({ type: "error", message: "Extract a PDF before creating transaction drafts." });
+      return;
+    }
+    const nextDrafts = buildDraftsFromSections(manualSections);
+    setDrafts(nextDrafts);
+    setAlert({ type: "success", message: `Created ${nextDrafts.length} editable transaction draft(s) from your page splits.` });
   };
 
   const updateDraft = (id: string, patch: Partial<DraftTransaction>) => {
@@ -449,52 +511,72 @@ const AddPage: React.FC = () => {
     setSeeding(true);
     setAlert(null);
 
-    try {
-      const batches = batchDraftsByPayloadSize(drafts, 2_600_000);
-      const seeded = new Map<string, any>();
-      let usedFallback = false;
+    let successCount = 0;
+    let errorCount = 0;
+    let heuristicCount = 0;
+    const providers = new Set<string>();
 
-      for (const batch of batches) {
-        const response = await fetch("/api/add/seed-transactions", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            sections: batch.map((draft) => ({
-              localId: draft.id,
-              pageStart: draft.pageStart,
-              pageEnd: draft.pageEnd,
-              text: draft.extractedText,
-            })),
-          }),
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data?.error || "Failed to generate AI drafts");
-        (data.transactions || []).forEach((transaction: any) => seeded.set(transaction.localId, transaction));
-        usedFallback = usedFallback || Boolean(data.meta?.usedFallback);
+    try {
+      for (const draft of drafts) {
+        updateDraft(draft.id, { aiStatus: "loading", aiError: undefined });
+
+        try {
+          const response = await fetch("/api/add/seed-transactions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              sections: [
+                {
+                  localId: draft.id,
+                  pageStart: draft.pageStart,
+                  pageEnd: draft.pageEnd,
+                  text: draft.extractedText,
+                },
+              ],
+            }),
+          });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data?.error || "Failed to generate AI draft");
+          const match = (data.transactions || []).find((transaction: any) => transaction.localId === draft.id);
+          if (!match) throw new Error("AI response did not include this split");
+
+          if (data.meta?.provider) providers.add(data.meta.provider);
+          if (data.meta?.usedFallback) heuristicCount += 1;
+
+          setDrafts((prev) =>
+            prev.map((item) =>
+              item.id === draft.id
+                ? {
+                    ...item,
+                    title: match.title || item.title,
+                    keywords: match.keywords || item.keywords,
+                    summary: match.summary || item.summary,
+                    conclusion: match.conclusion || item.conclusion,
+                    informationRating: match.informationRating || item.informationRating,
+                    genericSubjects: match.genericSubjects || item.genericSubjects,
+                    specificSubjects: match.specificSubjects || item.specificSubjects,
+                    aiStatus: "ready",
+                    aiError: undefined,
+                  }
+                : item
+            )
+          );
+          successCount += 1;
+        } catch (error: any) {
+          errorCount += 1;
+          const message = error?.message || "AI generation failed.";
+          updateDraft(draft.id, { aiStatus: "error", aiError: message });
+        }
       }
 
-      setDrafts((prev) =>
-        prev.map((draft) => {
-          const match: any = seeded.get(draft.id);
-          if (!match) return draft;
-          return {
-            ...draft,
-            title: match.title || draft.title,
-            keywords: match.keywords || draft.keywords,
-            summary: match.summary || draft.summary,
-            conclusion: match.conclusion || draft.conclusion,
-            informationRating: match.informationRating || draft.informationRating,
-            genericSubjects: match.genericSubjects || draft.genericSubjects,
-            specificSubjects: match.specificSubjects || draft.specificSubjects,
-          };
-        })
-      );
       setAlert({
-        type: usedFallback ? "warning" : "success",
-        message: usedFallback ? "Drafts generated with fallback ranking." : "AI drafts generated.",
+        type: errorCount || heuristicCount ? "warning" : "success",
+        message: `AI populated ${successCount}/${drafts.length} draft(s)${
+          providers.size ? ` via ${Array.from(providers).join(", ")}` : ""
+        }${heuristicCount ? `. ${heuristicCount} used heuristic fallback.` : ""}${
+          errorCount ? ` ${errorCount} draft(s) need retry.` : ""
+        }`,
       });
-    } catch (error: any) {
-      setAlert({ type: "error", message: error?.message || "AI generation failed." });
     } finally {
       setSeeding(false);
     }
@@ -633,7 +715,7 @@ const AddPage: React.FC = () => {
       <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">DeepSeek prompts</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">AI prompts</p>
             <h2 className="mt-1 text-base font-semibold text-slate-950">AI generation prompts</h2>
             <p className="mt-1 text-sm leading-6 text-slate-600">
               These prompts are stored in the database. Changes are used on the next AI generation request.
@@ -788,44 +870,190 @@ const AddPage: React.FC = () => {
       </section>
 
       {createdBook && (
-        <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div>
-              <h2 className="text-base font-semibold text-slate-950">Splits</h2>
-              <p className="mt-1 text-sm text-slate-600">{drafts.length} draft transaction(s), {selectedForReview} marked for subject review</p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <div className="flex items-center rounded-md border border-slate-300 bg-white">
-                <span className="px-3 text-xs font-semibold text-slate-600">Pages</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={25}
-                  value={pagesPerSplit}
-                  onChange={(event) => setPagesPerSplit(Math.max(1, Number(event.target.value) || 1))}
-                  className="w-16 border-l border-slate-300 px-2 py-2 text-sm focus:outline-none"
-                />
+        <section className="space-y-5">
+          <div className="flex flex-col gap-2">
+            <p className="text-xs font-semibold uppercase tracking-[0.25em] text-slate-500">Step 2</p>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-xl font-semibold text-slate-950">Split PDF into transaction sections</h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  Click the scissors between pages to create manual cuts. Transaction drafts are created only after you confirm the split layout.
+                </p>
               </div>
-              <button type="button" onClick={regenerateSplits} className="inline-flex items-center rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
-                <Scissors className="mr-2 h-4 w-4" />
-                Regenerate
-              </button>
-              <button type="button" onClick={seedDrafts} disabled={seeding || !drafts.length} className="inline-flex items-center rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-60">
-                {seeding ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
-                Generate AI Data
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={createDraftsFromManualSplits}
+                  disabled={!pages.length}
+                  className="inline-flex items-center justify-center rounded-md bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <Scissors className="mr-2 h-4 w-4" />
+                  Create Transaction Drafts
+                </button>
+                <button
+                  type="button"
+                  onClick={seedDrafts}
+                  disabled={seeding || !drafts.length}
+                  className="inline-flex items-center justify-center rounded-md bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {seeding ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
+                  {seeding ? "Generating One by One" : "Generate AI Data"}
+                </button>
+              </div>
             </div>
           </div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button type="button" onClick={() => toggleAllReviewStatus("approved")} className="inline-flex items-center rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-100">
-              <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" />
-              Mark All Convinced
-            </button>
-            <button type="button" onClick={() => toggleAllReviewStatus("needs_review")} className="inline-flex items-center rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800 hover:bg-amber-100">
-              <AlertCircle className="mr-1.5 h-3.5 w-3.5" />
-              Mark All Review Later
-            </button>
+
+          <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+            <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+              {pages.length ? (
+                <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                  {pages.map((page, index) => {
+                    const isSplit = splitIndices.has(index);
+                    const isLast = index === pages.length - 1;
+                    return (
+                      <div key={page.pageNumber} className="group relative overflow-visible">
+                        <div className="relative overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm transition-all duration-200 hover:-translate-y-1 hover:border-slate-300 hover:shadow-md">
+                          <div className="relative flex h-[280px] items-center justify-center overflow-hidden bg-slate-50 p-4">
+                            {page.thumbnailDataUrl ? (
+                              <img
+                                src={page.thumbnailDataUrl}
+                                alt={`PDF page ${page.pageNumber}`}
+                                className="max-h-[240px] max-w-full rounded border border-slate-200 bg-white object-contain p-1 shadow-sm"
+                              />
+                            ) : (
+                              <div className="flex h-[220px] w-[160px] items-center justify-center rounded border border-dashed border-slate-300 bg-white text-sm font-semibold text-slate-400">
+                                Page {page.pageNumber}
+                              </div>
+                            )}
+                          </div>
+                          <div className="border-t border-slate-200 bg-slate-50 p-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex min-w-0 flex-1 items-center gap-2">
+                                <FileText className="h-4 w-4 flex-shrink-0 text-slate-400" />
+                                <span className="truncate rounded bg-red-50 px-2 py-1 text-xs font-normal text-red-700">
+                                  {pdfFile?.name || "PDF"}
+                                </span>
+                              </div>
+                              <span className="flex h-6 min-w-[24px] flex-shrink-0 items-center justify-center rounded bg-slate-950 px-2 text-xs font-semibold text-white">
+                                {page.pageNumber}
+                              </span>
+                            </div>
+                            <p className="mt-2 line-clamp-2 min-h-[2.5rem] text-xs leading-5 text-slate-500">
+                              {page.text || "No embedded text detected on this page."}
+                            </p>
+                          </div>
+                        </div>
+
+                        {!isLast && (
+                          <div className="absolute -bottom-5 left-1/2 z-10 -translate-x-1/2 sm:-right-4 sm:bottom-auto sm:left-auto sm:top-1/2 sm:-translate-y-1/2 sm:translate-x-0">
+                            <button
+                              type="button"
+                              onClick={() => toggleSplit(index)}
+                              className={`flex h-10 w-10 items-center justify-center rounded-full border-2 text-lg shadow-sm transition-all duration-200 hover:scale-110 active:scale-95 ${
+                                isSplit
+                                  ? "border-slate-950 bg-slate-950 text-white shadow-md"
+                                  : "border-slate-300 bg-white text-slate-600 hover:border-slate-400 hover:bg-slate-50"
+                              }`}
+                              title={isSplit ? "Remove split" : "Split after this page"}
+                              aria-label={isSplit ? `Remove split after page ${page.pageNumber}` : `Split after page ${page.pageNumber}`}
+                            >
+                              <Scissors className="h-5 w-5" />
+                            </button>
+                            {isSplit && (
+                              <div className="absolute left-1/2 top-full mt-2 -translate-x-1/2 whitespace-nowrap rounded border border-slate-950 bg-slate-950 px-2.5 py-1 text-xs font-medium text-white shadow-sm">
+                                Split here
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="flex min-h-[180px] flex-col items-center justify-center gap-3 text-center text-slate-500">
+                  <Plus className="h-10 w-10 text-slate-400" />
+                  <p className="text-sm font-medium">Save book details and extract a PDF to begin splitting.</p>
+                </div>
+              )}
+            </div>
+
+            <aside className="flex h-fit flex-col gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm lg:sticky lg:top-6">
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-semibold text-slate-950">Split Controls</h3>
+                <span className="text-xs text-slate-500">{manualSections.length} sections</span>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="font-medium text-slate-800">Pages extracted</span>
+                  <span className="text-slate-500">{pages.length}</span>
+                </div>
+                <div className="mt-2 flex items-center justify-between">
+                  <span className="font-medium text-slate-800">Manual cuts</span>
+                  <span className="text-slate-500">{splitIndices.size}</span>
+                </div>
+              </div>
+              <div className="max-h-[320px] space-y-2 overflow-auto rounded-lg border border-slate-200 bg-slate-50 p-3">
+                {manualSections.map((section, index) => {
+                  const pageStart = section[0]?.pageNumber;
+                  const pageEnd = section[section.length - 1]?.pageNumber;
+                  return (
+                    <div key={`${pageStart}-${pageEnd}-${index}`} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800">
+                      <p className="font-semibold">Split {index + 1}</p>
+                      <p className="text-xs text-slate-500">
+                        Pages {pageStart === pageEnd ? pageStart : `${pageStart} - ${pageEnd}`} ({section.length})
+                      </p>
+                    </div>
+                  );
+                })}
+                {!manualSections.length && <p className="text-center text-xs text-slate-500">No pages extracted yet.</p>}
+              </div>
+              <div className="grid gap-2">
+                <button
+                  type="button"
+                  onClick={clearSplitCuts}
+                  disabled={!splitIndices.size}
+                  className="inline-flex items-center justify-center rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Clear Cuts
+                </button>
+                <button
+                  type="button"
+                  onClick={createDraftsFromManualSplits}
+                  disabled={!pages.length}
+                  className="inline-flex items-center justify-center rounded-md bg-slate-950 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Create {manualSections.length || 0} Draft{manualSections.length === 1 ? "" : "s"}
+                </button>
+              </div>
+              <p className="text-xs leading-5 text-slate-500">
+                After drafts are created, AI runs one split at a time and fills the editable fields below.
+              </p>
+            </aside>
           </div>
+
+          {drafts.length > 0 && (
+            <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <h2 className="text-base font-semibold text-slate-950">Editable Summary Transactions</h2>
+                  <p className="mt-1 text-sm text-slate-600">
+                    {drafts.length} draft transaction(s), {selectedForReview} marked for subject review
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => toggleAllReviewStatus("approved")} className="inline-flex items-center rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-100">
+                    <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" />
+                    Mark All Convinced
+                  </button>
+                  <button type="button" onClick={() => toggleAllReviewStatus("needs_review")} className="inline-flex items-center rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800 hover:bg-amber-100">
+                    <AlertCircle className="mr-1.5 h-3.5 w-3.5" />
+                    Mark All Review Later
+                  </button>
+                </div>
+              </div>
+            </section>
+          )}
         </section>
       )}
 
@@ -836,6 +1064,29 @@ const AddPage: React.FC = () => {
               <div className="min-w-0">
                 <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Transaction #{draft.srNo}</p>
                 <h3 className="mt-1 truncate text-lg font-semibold text-slate-950">{draft.title || `Pages ${draft.pageNo}`}</h3>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <span
+                    className={`inline-flex items-center rounded-md px-2 py-1 text-xs font-semibold ${
+                      draft.aiStatus === "ready"
+                        ? "bg-emerald-50 text-emerald-700"
+                        : draft.aiStatus === "loading"
+                          ? "bg-indigo-50 text-indigo-700"
+                          : draft.aiStatus === "error"
+                            ? "bg-red-50 text-red-700"
+                            : "bg-slate-100 text-slate-600"
+                    }`}
+                  >
+                    {draft.aiStatus === "loading" && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+                    {draft.aiStatus === "ready"
+                      ? "AI populated"
+                      : draft.aiStatus === "loading"
+                        ? "AI generating"
+                        : draft.aiStatus === "error"
+                          ? "AI needs retry"
+                          : "AI pending"}
+                  </span>
+                  {draft.aiError && <span className="text-xs font-medium text-red-600">{draft.aiError}</span>}
+                </div>
               </div>
               <div className="flex flex-wrap gap-2">
                 <label className="inline-flex items-center rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
@@ -948,7 +1199,7 @@ const AddPage: React.FC = () => {
             <button
               type="button"
               onClick={saveTransactions}
-              disabled={saving || !drafts.length}
+              disabled={saving || seeding || !drafts.length}
               className="inline-flex items-center justify-center rounded-md bg-slate-950 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
             >
               {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}

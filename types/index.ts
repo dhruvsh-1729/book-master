@@ -64,6 +64,10 @@ export interface BookMaster {
   updatedAt: string;
   editors?: BookEditor[];
   summaryTransactions?: SummaryTransaction[];
+  _count?: {
+    summaryTransactions?: number;
+    transactions?: number;
+  };
 }
 
 export interface MultilingualText {

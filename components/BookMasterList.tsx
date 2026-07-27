@@ -1,6 +1,6 @@
 // components/BookMasterList.tsx
 import React, { useState, useEffect } from 'react';
-import { Book, Plus, FileText, Tag as TagIcon, Download } from 'lucide-react';
+import { Book, Plus, FileText, Tag as TagIcon, Download, Trash2 } from 'lucide-react';
 import {
   DataTable,
   Modal,
@@ -97,6 +97,8 @@ const BookMasterList: React.FC = () => {
   };
   const handlePageChange = (page: number) => fetchBooks(page, searchTerm);
   const handleViewBook = (b: BookMaster) => (window.location.href = `/books/${b.id}`);
+  const getSummaryTransactionCount = (book: BookMaster) =>
+    book._count?.summaryTransactions ?? book._count?.transactions ?? book.summaryTransactions?.length ?? 0;
   const handleEditBook = async (b: BookMaster) => {
     setSelectedBook(null);
     try {
@@ -111,11 +113,24 @@ const BookMasterList: React.FC = () => {
     }
   };
   const handleDeleteBook = async (b: BookMaster) => {
+    const transactionCount = getSummaryTransactionCount(b);
+    if (transactionCount > 0) {
+      setAlert({
+        type: 'warning',
+        message: `This book has ${transactionCount} attached summary transaction${
+          transactionCount === 1 ? '' : 's'
+        }. Only books with zero transactions can be deleted.`,
+      });
+      return;
+    }
     if (!confirm(`Delete "${b.bookName}"?`)) return;
     setDeleteInProgressId(b.id);
     try {
       const res = await fetch(`/api/books/${b.id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('Failed to delete book');
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.error || 'Failed to delete book');
+      }
       setAlert({ type: 'success', message: 'Book deleted successfully' });
       fetchBooks(pagination.page, searchTerm);
     } catch (e: any) {
@@ -213,6 +228,15 @@ const BookMasterList: React.FC = () => {
       label: 'Grade',
       render: (v: string | null) => v || '-',
     },
+    {
+      key: '_count',
+      label: 'Transactions',
+      render: (_: unknown, row) => (
+        <span className="inline-flex items-center rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-semibold text-slate-700">
+          {getSummaryTransactionCount(row)}
+        </span>
+      ),
+    },
   ];
 
   return (
@@ -250,17 +274,41 @@ const BookMasterList: React.FC = () => {
           loading={loading}
           onView={handleViewBook}
           onEdit={handleEditBook}
-          onDelete={handleDeleteBook}
           renderActions={(row) => (
-            <button
-              type="button"
-              onClick={() => openBookExportModal(row)}
-              className="inline-flex items-center gap-1 rounded-md bg-green-50 px-2 py-1 text-xs font-semibold text-green-700 hover:bg-green-100 disabled:opacity-60"
-              disabled={bookExporting}
-            >
-              <Download className="h-3.5 w-3.5" />
-              Export
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => openBookExportModal(row)}
+                className="inline-flex items-center gap-1 rounded-md bg-green-50 px-2 py-1 text-xs font-semibold text-green-700 hover:bg-green-100 disabled:opacity-60"
+                disabled={bookExporting || deleteInProgressId === row.id}
+              >
+                <Download className="h-3.5 w-3.5" />
+                Export
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeleteBook(row)}
+                disabled={deleteInProgressId === row.id || getSummaryTransactionCount(row) > 0}
+                title={
+                  getSummaryTransactionCount(row) > 0
+                    ? 'Only books with zero summary transactions can be deleted'
+                    : 'Delete empty book'
+                }
+                className="inline-flex items-center gap-1 rounded-md border border-red-200 px-2 py-1 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {deleteInProgressId === row.id ? (
+                  <>
+                    <LoadingSpinner size="sm" colorClass="border-current" />
+                    Deleting
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Delete
+                  </>
+                )}
+              </button>
+            </>
           )}
           actionBusyRowId={deleteInProgressId}
           actionBusyMessage="Deleting..."

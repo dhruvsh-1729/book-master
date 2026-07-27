@@ -171,22 +171,19 @@ export class BookRepository extends BaseRepository {
     await this.findById(id, userId);
 
     await this.prisma.$transaction(async (tx) => {
-      const txIds = await tx.summaryTransaction.findMany({
-        where: { bookId: id },
-        select: { id: true },
-      });
-      const summaryIds = txIds.map((t) => t.id);
-
-      if (summaryIds.length) {
-        await tx.summaryTransactionSpecificTag.deleteMany({ where: { summaryTransactionId: { in: summaryIds } } });
-        await tx.summaryTransactionGenericSubject.deleteMany({ where: { summaryTransactionId: { in: summaryIds } } });
+      const transactionCount = await tx.summaryTransaction.count({ where: { bookId: id } });
+      if (transactionCount > 0) {
+        throw new ApiError(
+          409,
+          `Cannot delete this book because it has ${transactionCount} attached summary transaction${
+            transactionCount === 1 ? "" : "s"
+          }. Remove or move those transactions first.`,
+          "BOOK_HAS_TRANSACTIONS"
+        );
       }
 
-      await Promise.all([
-        tx.bookEditor.deleteMany({ where: { bookId: id } }),
-        tx.summaryTransaction.deleteMany({ where: { bookId: id } }),
-      ]);
-
+      await tx.bookImage.deleteMany({ where: { bookId: id } });
+      await tx.bookEditor.deleteMany({ where: { bookId: id } });
       await tx.bookMaster.delete({ where: { id } });
     });
   }
