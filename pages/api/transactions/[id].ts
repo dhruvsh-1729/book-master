@@ -85,6 +85,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         footNote,
         imageUrl,
         imagePublicId,
+        subjectReviewStatus,
+        pendingGenericSubjects,
+        pendingSpecificSubjects,
+        subjectReviewedAt,
         images,
       } = req.body ?? {};
 
@@ -138,6 +142,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             : {}),
           ...(imagePublicId !== undefined || primaryImage
             ? { imagePublicId: primaryImage?.publicId ?? imagePublicId ?? null }
+            : {}),
+          ...(subjectReviewStatus !== undefined ? { subjectReviewStatus: String(subjectReviewStatus) } : {}),
+          ...(pendingGenericSubjects !== undefined ? { pendingGenericSubjects: pendingGenericSubjects ?? null } : {}),
+          ...(pendingSpecificSubjects !== undefined ? { pendingSpecificSubjects: pendingSpecificSubjects ?? null } : {}),
+          ...(subjectReviewedAt !== undefined
+            ? { subjectReviewedAt: subjectReviewedAt ? new Date(subjectReviewedAt) : null }
             : {}),
           ...(normalizedImages
             ? {

@@ -2,6 +2,9 @@
   "name": "book-master",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -21,6 +24,7 @@
     "lodash": "^4.17.21",
     "lucide-react": "^0.542.0",
     "next": "15.5.9",
+    "pdfjs-dist": "^6.1.200",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-easy-crop": "^5.2.0",

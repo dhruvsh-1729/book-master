@@ -1,6 +1,6 @@
 // pages/index.tsx
 import React, { useState, useEffect } from 'react';
-import { Book, FileText, Tag, TrendingUp, BarChart2, Activity, Users, Search } from 'lucide-react';
+import { Book, FileText, Tag, TrendingUp, BarChart2, Activity, Users, Search, FilePlus2, ClipboardCheck, ArrowRight } from 'lucide-react';
 import { useRouter } from 'next/router';
 import { Card, StatsCard } from '../components/CoreComponents';
 import {
@@ -90,9 +90,62 @@ const Dashboard: React.FC = () => {
     <div className="space-y-8">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-          <p className="text-gray-600">Welcome to your BookMaster system</p>
+          <h1 className="text-2xl font-bold text-slate-950">Dashboard</h1>
+          <p className="text-slate-600">Welcome to your BookMaster system</p>
         </div>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-3">
+        <button
+          type="button"
+          onClick={() => router.push('/add')}
+          className="group rounded-lg border border-indigo-200 bg-white p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-indigo-300 hover:shadow-md"
+        >
+          <div className="flex items-start justify-between gap-4">
+            <div className="rounded-md bg-indigo-50 p-2 text-indigo-700">
+              <FilePlus2 className="h-5 w-5" />
+            </div>
+            <ArrowRight className="h-5 w-5 text-slate-300 transition group-hover:translate-x-1 group-hover:text-indigo-600" />
+          </div>
+          <h2 className="mt-4 text-base font-semibold text-slate-950">Add PDF Book</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-600">
+            Create a book, detect its cover, split the PDF, and seed editable summary transactions with AI.
+          </p>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => router.push('/subject-reviews')}
+          className="group rounded-lg border border-amber-200 bg-white p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-amber-300 hover:shadow-md"
+        >
+          <div className="flex items-start justify-between gap-4">
+            <div className="rounded-md bg-amber-50 p-2 text-amber-700">
+              <ClipboardCheck className="h-5 w-5" />
+            </div>
+            <ArrowRight className="h-5 w-5 text-slate-300 transition group-hover:translate-x-1 group-hover:text-amber-600" />
+          </div>
+          <h2 className="mt-4 text-base font-semibold text-slate-950">Review Subjects</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-600">
+            Approve, reject, add, or remove AI-suggested generic and specific subjects.
+          </p>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => router.push('/transactions')}
+          className="group rounded-lg border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md"
+        >
+          <div className="flex items-start justify-between gap-4">
+            <div className="rounded-md bg-emerald-50 p-2 text-emerald-700">
+              <FileText className="h-5 w-5" />
+            </div>
+            <ArrowRight className="h-5 w-5 text-slate-300 transition group-hover:translate-x-1 group-hover:text-emerald-600" />
+          </div>
+          <h2 className="mt-4 text-base font-semibold text-slate-950">All Transactions</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-600">
+            Browse and edit summary transactions after PDF processing or spreadsheet import.
+          </p>
+        </button>
       </div>
 
       {/* Stats */}

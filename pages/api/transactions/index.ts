@@ -125,6 +125,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         footNote,
         imageUrl,
         imagePublicId,
+        subjectReviewStatus,
+        pendingGenericSubjects,
+        pendingSpecificSubjects,
         images,
       } = req.body ?? {};
 
@@ -192,6 +195,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           footNote: footNote ?? null,
           imageUrl: (primaryImage?.url ?? imageUrl) || null,
           imagePublicId: (primaryImage?.publicId ?? imagePublicId) || null,
+          subjectReviewStatus: subjectReviewStatus === "needs_review" ? "needs_review" : "approved",
+          pendingGenericSubjects: pendingGenericSubjects ?? null,
+          pendingSpecificSubjects: pendingSpecificSubjects ?? null,
           images: normalizedImages.length
             ? {
                 create: normalizedImages.map((img: any) => ({

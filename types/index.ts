@@ -88,6 +88,10 @@ export interface SummaryTransaction {
   footNote?: string | null;
   imageUrl?: string | null;
   imagePublicId?: string | null;
+  subjectReviewStatus?: SubjectReviewStatus | string;
+  pendingGenericSubjects?: AISubjectSuggestion[] | null;
+  pendingSpecificSubjects?: AISubjectSuggestion[] | null;
+  subjectReviewedAt?: string | null;
   images?: MediaImage[];
   createdAt: string;
   updatedAt: string;
@@ -139,12 +143,15 @@ export interface TagsResponse {
 export interface AISubjectSuggestion {
   name: string;
   subjectId?: string | null;
+  tagId?: string | null;
   description?: string | null;
   category?: string | null;
   reason: string;
-  source: 'existing' | 'new';
+  source: 'existing' | 'new' | 'manual' | string;
   selected?: boolean;
 }
+
+export type SubjectReviewStatus = 'approved' | 'needs_review' | 'rejected';
 
 export interface SubjectSuggestionResponse {
   genericSuggestions: AISubjectSuggestion[];
@@ -202,6 +209,9 @@ export interface TransactionFormData {
   bookId: string;
   imageUrl?: string | null;
   imagePublicId?: string | null;
+  subjectReviewStatus?: SubjectReviewStatus | string;
+  pendingGenericSubjects?: AISubjectSuggestion[] | null;
+  pendingSpecificSubjects?: AISubjectSuggestion[] | null;
   images?: MediaImage[];
 }
 

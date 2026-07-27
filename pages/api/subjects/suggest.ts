@@ -7,6 +7,12 @@ import {
   normalizeSubjectName,
   normalizeWhitespace,
 } from "@/lib/subjects/normalization";
+import {
+  createDeepSeekJsonCompletion,
+  DEEPSEEK_MODEL,
+  hasDeepSeekKey,
+  parseJsonObjectFromAi,
+} from "@/lib/services/deepseek.service";
 
 type SubjectCandidate = {
   id: string;
@@ -24,8 +30,6 @@ type SuggestionShape = {
   category?: string | null;
 };
 
-const SARVAM_API_URL = process.env.SARVAM_API_URL || "https://api.sarvam.ai/v1/chat/completions";
-const SARVAM_MODEL = process.env.SARVAM_MODEL || "sarvam-m";
 const GENERIC_LIMIT = 6;
 const SPECIFIC_LIMIT = 8;
 const CANDIDATE_LIMIT = 24;
@@ -202,17 +206,6 @@ Existing specific candidates:
 ${specificCandidates.length ? formatCandidateList(specificCandidates) : "(none)"}
 `;
 
-const extractJsonPayload = (value: string) => {
-  const trimmed = value.trim();
-  const firstBrace = trimmed.indexOf("{");
-  const lastBrace = trimmed.lastIndexOf("}");
-  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
-    throw new Error("No JSON object found in AI response");
-  }
-
-  return JSON.parse(trimmed.slice(firstBrace, lastBrace + 1));
-};
-
 const normalizeSuggestions = ({
   suggestions,
   subjectsByName,
@@ -382,7 +375,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }),
       meta: {
         usedFallback: true,
-        model: process.env.SARVAM_API_KEY ? SARVAM_MODEL : "heuristic-only",
+        model: hasDeepSeekKey() ? DEEPSEEK_MODEL : "heuristic-only",
         title: safeTitle,
         candidateCounts: {
           generic: genericCandidates.length,
@@ -391,55 +384,35 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       },
     };
 
-    if (!process.env.SARVAM_API_KEY) {
+    if (!hasDeepSeekKey()) {
       return res.status(200).json(fallbackPayload);
     }
 
     try {
-      const response = await fetch(SARVAM_API_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "api-subscription-key": process.env.SARVAM_API_KEY,
-        },
-        body: JSON.stringify({
-          model: SARVAM_MODEL,
-          messages: [
-            {
-              role: "system",
-              content:
-                "You classify research summaries into subject taxonomies. Always respond with strict JSON only.",
-            },
-            {
-              role: "user",
-              content: buildPrompt({
-                title: safeTitle,
-                sourceText,
-                currentGenericNames,
-                currentSpecificNames,
-                genericCandidates,
-                specificCandidates,
-              }),
-            },
-          ],
-          temperature: 0.2,
-          max_tokens: 900,
-        }),
+      const response = await createDeepSeekJsonCompletion({
+        messages: [
+          {
+            role: "system",
+            content:
+              "You classify research summaries into subject taxonomies. Always respond with strict json only.",
+          },
+          {
+            role: "user",
+            content: buildPrompt({
+              title: safeTitle,
+              sourceText,
+              currentGenericNames,
+              currentSpecificNames,
+              genericCandidates,
+              specificCandidates,
+            }),
+          },
+        ],
+        temperature: 0.2,
+        maxTokens: 900,
       });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error("Sarvam subject suggestion error", response.status, errorText);
-        return res.status(200).json(fallbackPayload);
-      }
-
-      const data = await response.json();
-      const content = data?.choices?.[0]?.message?.content;
-      if (typeof content !== "string" || !content.trim()) {
-        return res.status(200).json(fallbackPayload);
-      }
-
-      const parsed = extractJsonPayload(content);
+      const parsed = parseJsonObjectFromAi(response.content);
       const genericSuggestions = normalizeSuggestions({
         suggestions: Array.isArray(parsed?.genericSubjects) ? parsed.genericSubjects : [],
         subjectsByName: genericSubjectsByName,
@@ -462,7 +435,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           : fallbackPayload.specificSuggestions,
         meta: {
           usedFallback: !genericSuggestions.length || !specificSuggestions.length,
-          model: SARVAM_MODEL,
+          model: response.model || DEEPSEEK_MODEL,
           title: safeTitle,
           candidateCounts: {
             generic: genericCandidates.length,
@@ -471,7 +444,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         },
       });
     } catch (aiError) {
-      console.error("Sarvam subject suggestion fallback", aiError);
+      console.error("DeepSeek subject suggestion fallback", aiError);
       return res.status(200).json(fallbackPayload);
     }
   } catch (error) {

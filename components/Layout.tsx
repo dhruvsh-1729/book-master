@@ -16,7 +16,9 @@ import {
   Settings,
   LogOut,
   UploadCloud,
-  Download
+  Download,
+  FilePlus2,
+  ClipboardCheck
 } from 'lucide-react';
 import { Modal, FormInput, Alert, LoadingSpinner } from './CoreComponents';
 import {
@@ -138,8 +140,10 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
   const navigation: NavigationItem[] = [
     { name: 'Dashboard', href: '/', icon: Home },
+    { name: 'Add PDF', href: '/add', icon: FilePlus2 },
     { name: 'Book Master', href: '/books', icon: Book },
     { name: 'Subject Management', href: '/subjects', icon: Tag },
+    { name: 'Subject Reviews', href: '/subject-reviews', icon: ClipboardCheck },
     { name: 'Transaction Search', href: '/transactions/search', icon: Search },
     { name: 'All Transactions', href: '/transactions', icon: FileText },
     ...(user?.role === 'admin' ? [{ name: 'Admin', href: '/admin', icon: Settings }] : []),
@@ -147,7 +151,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
   const isActive = (href: string): boolean => {
     if (href === '/') {
-      return router.pathname === '/';
+      return router.pathname === '/' || router.pathname === '/dashboard';
     }
     return router.pathname.startsWith(href);
   };
@@ -425,7 +429,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-slate-100 text-slate-950">
       {/* Mobile sidebar */}
       <div className={`fixed inset-0 flex z-40 md:hidden ${sidebarOpen ? '' : 'pointer-events-none'}`}>
         <div
@@ -465,8 +469,8 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           onImportClick={() => setShowImportModal(true)}
           onExportClick={() => setShowExportModal(true)}
         />
-        <main className="flex-1">
-          <div className="py-6 px-4 sm:px-6 lg:px-8">
+        <main className="min-h-screen flex-1">
+          <div className="px-4 py-5 sm:px-6 lg:px-8">
             {children}
           </div>
         </main>
@@ -761,12 +765,12 @@ interface SidebarProps {
 
 const Sidebar: React.FC<SidebarProps> = ({ navigation, isActive }) => {
   return (
-    <div className="flex-1 flex flex-col min-h-0 border-r border-gray-200 bg-white">
+    <div className="flex-1 flex flex-col min-h-0 border-r border-slate-200 bg-white">
       <div className="flex-1 flex flex-col pt-5 pb-4 overflow-y-auto">
         <div className="flex items-center flex-shrink-0 px-4">
           <div className="flex items-center">
-            <Book className="h-8 w-8 text-blue-600" />
-            <span className="ml-2 text-xl font-bold text-gray-900">BookMaster</span>
+            <Book className="h-8 w-8 text-indigo-600" />
+            <span className="ml-2 text-xl font-bold text-slate-950">BookMaster</span>
           </div>
         </div>
         <nav className="mt-8 flex-1 px-2 space-y-1">
@@ -777,13 +781,13 @@ const Sidebar: React.FC<SidebarProps> = ({ navigation, isActive }) => {
                 <div
                   className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md transition-colors ${
                     isActive(item.href)
-                      ? 'bg-blue-100 text-blue-900'
-                      : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                      ? 'bg-indigo-50 text-indigo-900 ring-1 ring-indigo-100'
+                      : 'text-slate-600 hover:bg-slate-50 hover:text-slate-950'
                   }`}
                 >
                   <Icon
                     className={`mr-3 flex-shrink-0 h-5 w-5 ${
-                      isActive(item.href) ? 'text-blue-500' : 'text-gray-400 group-hover:text-gray-500'
+                      isActive(item.href) ? 'text-indigo-600' : 'text-slate-400 group-hover:text-slate-500'
                     }`}
                   />
                   {item.name}
@@ -804,20 +808,20 @@ const UserSection: React.FC = () => {
   const { user, logout } = useAuth();
 
   return (
-    <div className="flex-shrink-0 flex border-t border-gray-200 p-4">
+    <div className="flex-shrink-0 flex border-t border-slate-200 p-4">
       <div className="flex items-center justify-between w-full">
         <div className="flex items-center">
           <div className="flex-shrink-0">
-            <User className="h-8 w-8 text-gray-400 bg-gray-100 rounded-full p-1" />
+            <User className="h-8 w-8 rounded-full bg-slate-100 p-1 text-slate-500" />
           </div>
           <div className="ml-3">
-            <p className="text-sm font-medium text-gray-700">{user?.name || 'User'}</p>
-            <p className="text-xs text-gray-500">{user?.email}</p>
+            <p className="text-sm font-medium text-slate-800">{user?.name || 'User'}</p>
+            <p className="text-xs text-slate-500">{user?.email}</p>
           </div>
         </div>
         <button 
           onClick={logout}
-          className="text-gray-400 hover:text-gray-600"
+          className="text-slate-400 hover:text-slate-600"
           title="Logout"
         >
           <LogOut className="h-4 w-4" />
@@ -832,8 +836,8 @@ const MobileSidebar: React.FC<SidebarProps> = ({ navigation, isActive }) => {
   return (
     <div className="flex-1 h-0 pt-5 pb-4 overflow-y-auto">
       <div className="flex-shrink-0 flex items-center px-4">
-        <Book className="h-8 w-8 text-blue-600" />
-        <span className="ml-2 text-xl font-bold text-gray-900">BookMaster</span>
+        <Book className="h-8 w-8 text-indigo-600" />
+        <span className="ml-2 text-xl font-bold text-slate-950">BookMaster</span>
       </div>
       <nav className="mt-5 px-2 space-y-1">
         {navigation.map((item) => {
@@ -843,13 +847,13 @@ const MobileSidebar: React.FC<SidebarProps> = ({ navigation, isActive }) => {
               <div
                 className={`group flex items-center px-2 py-2 text-base font-medium rounded-md ${
                   isActive(item.href)
-                    ? 'bg-blue-100 text-blue-900'
-                    : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                    ? 'bg-indigo-50 text-indigo-900 ring-1 ring-indigo-100'
+                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-950'
                 }`}
               >
                 <Icon
                   className={`mr-4 flex-shrink-0 h-6 w-6 ${
-                    isActive(item.href) ? 'text-blue-500' : 'text-gray-400'
+                    isActive(item.href) ? 'text-indigo-600' : 'text-slate-400'
                   }`}
                 />
                 {item.name}
@@ -881,28 +885,28 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onImportClick, onExportCli
   };
 
   return (
-    <div className="sticky top-0 z-10 flex-shrink-0 flex h-16 bg-white shadow border-b border-gray-200">
+    <div className="sticky top-0 z-10 flex h-16 flex-shrink-0 border-b border-slate-200 bg-white/95 shadow-sm backdrop-blur">
       <button
         type="button"
-        className="px-4 border-r border-gray-200 text-gray-500 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-blue-500 md:hidden"
+        className="border-r border-slate-200 px-4 text-slate-600 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-500 md:hidden"
         onClick={onMenuClick}
       >
         <Menu className="h-6 w-6" />
       </button>
 
       <div className="flex-1 px-4 flex justify-between items-center">
-        <div className="flex-1 flex">
-          <div className="w-full flex md:ml-0">
+        <div className="hidden flex-1 sm:flex">
+          <div className="flex w-full md:ml-0">
             <label htmlFor="search-field" className="sr-only">
               Search
             </label>
-            <div className="relative w-full text-gray-400 focus-within:text-gray-600">
+            <div className="relative w-full text-slate-400 focus-within:text-slate-600">
               <div className="absolute inset-y-0 left-0 flex items-center pointer-events-none">
                 <Search className="h-5 w-5" />
               </div>
               <input
                 id="search-field"
-                className="block w-full h-full pl-8 pr-3 py-2 border-transparent text-gray-900 placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-0 focus:border-transparent"
+                className="block h-full w-full border-transparent py-2 pl-8 pr-3 text-slate-900 placeholder-slate-500 focus:border-transparent focus:outline-none focus:placeholder-slate-400 focus:ring-0"
                 placeholder="Search books, transactions..."
                 type="search"
                 value={searchTerm}
@@ -917,24 +921,26 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onImportClick, onExportCli
           </div>
         </div>
 
-        <div className="ml-4 flex items-center md:ml-6 space-x-3">
+        <div className="ml-2 flex items-center gap-2 md:ml-6">
+          <Link href="/add" className="inline-flex items-center rounded-md bg-slate-950 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800">
+            <FilePlus2 className="h-4 w-4 sm:mr-2" />
+            <span className="hidden sm:inline">Add</span>
+          </Link>
           <button
             onClick={onImportClick}
-            className="inline-flex items-center px-3 py-2 rounded-md border border-gray-300 text-sm font-medium text-gray-700 bg-white hover:bg-gray-50"
+            className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
           >
-            <UploadCloud className="h-4 w-4 mr-2 text-blue-600" />
+            <UploadCloud className="h-4 w-4 sm:mr-2 text-indigo-600" />
             <span className="hidden sm:inline">Import</span>
-            <span className="sm:hidden">Import</span>
           </button>
           <button
             onClick={onExportClick}
-            className="inline-flex items-center px-3 py-2 rounded-md border border-transparent text-sm font-medium text-white bg-blue-600 hover:bg-blue-700"
+            className="inline-flex items-center rounded-md border border-transparent bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-700"
           >
-            <Download className="h-4 w-4 mr-2" />
+            <Download className="h-4 w-4 sm:mr-2" />
             <span className="hidden sm:inline">Export</span>
-            <span className="sm:hidden">Export</span>
           </button>
-          <button className="p-1 rounded-full text-gray-400 hover:text-gray-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+          <button className="hidden rounded-md p-2 text-slate-400 hover:bg-slate-50 hover:text-slate-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:inline-flex">
             <Settings className="h-5 w-5" />
           </button>
         </div>
