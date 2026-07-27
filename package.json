@@ -10,6 +10,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "postinstall": "prisma generate",
     "migrate:subjects:lowercase": "node scripts/migrate-subjects-lowercase.js"
   },
   "dependencies": {
