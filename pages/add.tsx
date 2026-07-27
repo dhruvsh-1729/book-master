@@ -125,10 +125,28 @@ const parsePdf = async (file: File) => {
         .replace(/\s+/g, " ")
         .trim();
       pages.push({ pageNumber, text });
-      page.cleanup();
+      if (typeof page.cleanup === "function") {
+        page.cleanup();
+      }
     }
   } finally {
-    pdf.destroy();
+    try {
+      if (typeof pdf.cleanup === "function") {
+        await pdf.cleanup();
+      }
+    } catch (error) {
+      console.warn("PDF cleanup skipped", error);
+    }
+
+    try {
+      if (typeof task.destroy === "function") {
+        await task.destroy();
+      } else if (typeof pdf.destroy === "function") {
+        await pdf.destroy();
+      }
+    } catch (error) {
+      console.warn("PDF worker cleanup skipped", error);
+    }
   }
 
   return { pages, coverDataUrl, coverBlob };
