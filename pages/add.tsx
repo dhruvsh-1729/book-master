@@ -4,9 +4,16 @@ import {
   AlertCircle,
   BookOpen,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  Crop,
+  Eye,
   FileText,
   Loader2,
   Plus,
+  RotateCcw,
+  RotateCw,
   Save,
   Scissors,
   Sparkles,
@@ -30,6 +37,22 @@ type ExtractedPage = {
 };
 
 type PageTextMap = Record<number, string>;
+
+type WhiteoutRect = {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type WhiteoutDraft = {
+  pageNumber: number;
+  startX: number;
+  startY: number;
+  currentX: number;
+  currentY: number;
+};
 
 type PdfExtractionResponse = {
   pageCount: number;
@@ -97,6 +120,21 @@ const initialBookForm: BookFormData = {
 };
 
 const normalizeName = (value: string) => value.trim().replace(/\s+/g, " ").toLowerCase();
+
+const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
+
+const createViewRectFromPoints = (x1: number, y1: number, x2: number, y2: number): Omit<WhiteoutRect, "id"> => {
+  const left = clamp01(Math.min(x1, x2));
+  const top = clamp01(Math.min(y1, y2));
+  const right = clamp01(Math.max(x1, x2));
+  const bottom = clamp01(Math.max(y1, y2));
+  return {
+    x: left,
+    y: top,
+    width: Math.max(0, right - left),
+    height: Math.max(0, bottom - top),
+  };
+};
 
 const fileSize = (bytes: number) => {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
@@ -450,6 +488,7 @@ const SubjectPill = ({
 const AddPage: React.FC = () => {
   const router = useRouter();
   const manualTextInputRef = useRef<HTMLInputElement | null>(null);
+  const previewSurfaceRef = useRef<HTMLDivElement | null>(null);
   const [isClient, setIsClient] = useState(false);
   const [reactPdf, setReactPdf] = useState<{ Document: any; Page: any } | null>(null);
   const [bookForm, setBookForm] = useState<BookFormData>(initialBookForm);
@@ -472,6 +511,12 @@ const AddPage: React.FC = () => {
   const [manualTextBusy, setManualTextBusy] = useState(false);
   const [manualTextInfo, setManualTextInfo] = useState<{ fileName: string; pageCount: number; mode: string } | null>(null);
   const [pdfTextSource, setPdfTextSource] = useState<"server" | "browser" | "txt" | null>(null);
+  const [rotations, setRotations] = useState<Record<number, number>>({});
+  const [hoverPreview, setHoverPreview] = useState<{ pageNumber: number; rotation: number } | null>(null);
+  const [previewPosition, setPreviewPosition] = useState<number | null>(null);
+  const [whiteoutRegionsByPage, setWhiteoutRegionsByPage] = useState<Record<number, WhiteoutRect[]>>({});
+  const [whiteoutEditMode, setWhiteoutEditMode] = useState(false);
+  const [whiteoutDraft, setWhiteoutDraft] = useState<WhiteoutDraft | null>(null);
   const DocumentComp = reactPdf?.Document;
   const PageComp = reactPdf?.Page;
 
@@ -481,6 +526,26 @@ const AddPage: React.FC = () => {
   );
 
   const manualSections = useMemo(() => getSectionsFromPages(pages, splitIndices), [pages, splitIndices]);
+
+  const previewPage =
+    previewPosition !== null && previewPosition >= 0 && previewPosition < pages.length
+      ? pages[previewPosition]
+      : null;
+
+  const previewWhiteoutRects = useMemo(() => {
+    if (!previewPage) return [] as WhiteoutRect[];
+    return whiteoutRegionsByPage[previewPage.pageNumber] || [];
+  }, [previewPage, whiteoutRegionsByPage]);
+
+  const previewDraftRect = useMemo(() => {
+    if (!whiteoutDraft || !previewPage || whiteoutDraft.pageNumber !== previewPage.pageNumber) return null;
+    return createViewRectFromPoints(
+      whiteoutDraft.startX,
+      whiteoutDraft.startY,
+      whiteoutDraft.currentX,
+      whiteoutDraft.currentY
+    );
+  }, [previewPage, whiteoutDraft]);
 
   useEffect(() => {
     setIsClient(true);
@@ -526,6 +591,15 @@ const AddPage: React.FC = () => {
     setBookForm((prev) => ({ ...prev, [name]: value }));
   };
 
+  const resetPageTools = () => {
+    setRotations({});
+    setHoverPreview(null);
+    setPreviewPosition(null);
+    setWhiteoutRegionsByPage({});
+    setWhiteoutEditMode(false);
+    setWhiteoutDraft(null);
+  };
+
   const handlePdfFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const nextFile = event.target.files?.[0] || null;
     setPdfFile(nextFile);
@@ -536,6 +610,7 @@ const AddPage: React.FC = () => {
     setCoverPreview("");
     setManualTextInfo(null);
     setPdfTextSource(null);
+    resetPageTools();
   };
 
   const handleDocumentLoadSuccess = useCallback(
@@ -748,6 +823,7 @@ const AddPage: React.FC = () => {
 
       setSplitIndices(new Set());
       setDrafts([]);
+      resetPageTools();
       const extractedPageCount = parsed.pages.filter((page) => page.text.trim()).length;
       const extractionSource = parsed.source === "browser" ? "locally in the browser" : "on the Node server";
       const pageErrorCount = parsed.pageErrors?.length || 0;
@@ -788,6 +864,161 @@ const AddPage: React.FC = () => {
     setSplitIndices(new Set());
     resetDraftsAfterSplitChange();
   };
+
+  const rotatePage = (pageNumber: number, direction: "left" | "right") => {
+    setRotations((prev) => {
+      const current = prev[pageNumber] || 0;
+      const delta = direction === "left" ? -90 : 90;
+      return { ...prev, [pageNumber]: (current + delta + 360) % 360 };
+    });
+  };
+
+  const duplicatePageAt = (position: number) => {
+    setPages((prev) => {
+      const page = prev[position];
+      if (!page) return prev;
+      const next = [...prev];
+      next.splice(position + 1, 0, { ...page });
+      return next;
+    });
+    setSplitIndices(new Set());
+    resetDraftsAfterSplitChange();
+  };
+
+  const deletePageAt = (position: number) => {
+    setPages((prev) => {
+      if (prev.length <= 1 || position < 0 || position >= prev.length) return prev;
+      const next = prev.filter((_, index) => index !== position);
+      if (previewPosition !== null) {
+        if (position === previewPosition) setPreviewPosition(null);
+        else if (position < previewPosition) setPreviewPosition(previewPosition - 1);
+      }
+      return next;
+    });
+    setSplitIndices(new Set());
+    resetDraftsAfterSplitChange();
+  };
+
+  const openPreview = (position: number, cropMode = false) => {
+    setPreviewPosition(position);
+    setWhiteoutEditMode(cropMode);
+    setWhiteoutDraft(null);
+  };
+
+  const getWhiteoutPointerPoint = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const surface = previewSurfaceRef.current;
+    if (!surface) return null;
+    const rect = surface.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    return {
+      x: clamp01((event.clientX - rect.left) / rect.width),
+      y: clamp01((event.clientY - rect.top) / rect.height),
+    };
+  }, []);
+
+  const addWhiteoutRectForPage = useCallback((pageNumber: number, rect: Omit<WhiteoutRect, "id">) => {
+    if (rect.width < 0.003 || rect.height < 0.003) return;
+    setWhiteoutRegionsByPage((prev) => ({
+      ...prev,
+      [pageNumber]: [
+        ...(prev[pageNumber] || []),
+        {
+          id: createLocalId(),
+          ...rect,
+        },
+      ],
+    }));
+  }, []);
+
+  const removeWhiteoutRectForPage = useCallback((pageNumber: number, rectId: string) => {
+    setWhiteoutRegionsByPage((prev) => {
+      const nextRects = (prev[pageNumber] || []).filter((rect) => rect.id !== rectId);
+      if (nextRects.length === (prev[pageNumber] || []).length) return prev;
+      const next = { ...prev };
+      if (nextRects.length) next[pageNumber] = nextRects;
+      else delete next[pageNumber];
+      return next;
+    });
+  }, []);
+
+  const clearWhiteoutsForPage = useCallback((pageNumber: number) => {
+    setWhiteoutRegionsByPage((prev) => {
+      if (!prev[pageNumber]?.length) return prev;
+      const next = { ...prev };
+      delete next[pageNumber];
+      return next;
+    });
+  }, []);
+
+  const undoLastWhiteoutForPage = useCallback((pageNumber: number) => {
+    setWhiteoutRegionsByPage((prev) => {
+      const current = prev[pageNumber] || [];
+      if (!current.length) return prev;
+      const next = { ...prev };
+      const nextRects = current.slice(0, -1);
+      if (nextRects.length) next[pageNumber] = nextRects;
+      else delete next[pageNumber];
+      return next;
+    });
+  }, []);
+
+  const handlePreviewWhiteoutPointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (!whiteoutEditMode || !previewPage) return;
+      if (event.button !== 0) return;
+      const point = getWhiteoutPointerPoint(event);
+      if (!point) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+      setWhiteoutDraft({
+        pageNumber: previewPage.pageNumber,
+        startX: point.x,
+        startY: point.y,
+        currentX: point.x,
+        currentY: point.y,
+      });
+    },
+    [getWhiteoutPointerPoint, previewPage, whiteoutEditMode]
+  );
+
+  const handlePreviewWhiteoutPointerMove = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (!whiteoutDraft) return;
+      const point = getWhiteoutPointerPoint(event);
+      if (!point) return;
+      event.preventDefault();
+      setWhiteoutDraft((prev) => (prev ? { ...prev, currentX: point.x, currentY: point.y } : prev));
+    },
+    [getWhiteoutPointerPoint, whiteoutDraft]
+  );
+
+  const handlePreviewWhiteoutPointerUp = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (!whiteoutDraft) return;
+      const point = getWhiteoutPointerPoint(event);
+      event.preventDefault();
+      event.stopPropagation();
+      try {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      } catch {
+        // no-op
+      }
+      const finalDraft = point
+        ? { ...whiteoutDraft, currentX: point.x, currentY: point.y }
+        : whiteoutDraft;
+      addWhiteoutRectForPage(
+        finalDraft.pageNumber,
+        createViewRectFromPoints(finalDraft.startX, finalDraft.startY, finalDraft.currentX, finalDraft.currentY)
+      );
+      setWhiteoutDraft(null);
+    },
+    [addWhiteoutRectForPage, getWhiteoutPointerPoint, whiteoutDraft]
+  );
+
+  const handlePreviewWhiteoutPointerCancel = useCallback(() => {
+    setWhiteoutDraft(null);
+  }, []);
 
   const createDraftsFromManualSplits = () => {
     if (!manualSections.length) {
@@ -1231,29 +1462,127 @@ const AddPage: React.FC = () => {
                       {pages.map((page, index) => {
                         const isSplit = splitIndices.has(index);
                         const isLast = index === pages.length - 1;
+                        const rotation = rotations[page.pageNumber] || 0;
+                        const pageWhiteouts = whiteoutRegionsByPage[page.pageNumber] || [];
                         return (
-                          <div key={page.pageNumber} className="group relative overflow-visible">
+                          <div
+                            key={`${page.pageNumber}-${index}`}
+                            className="group relative overflow-visible"
+                            onMouseEnter={() => setHoverPreview({ pageNumber: page.pageNumber, rotation })}
+                            onMouseLeave={() => setHoverPreview(null)}
+                          >
                             <div className="relative overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm transition-all duration-200 hover:-translate-y-1 hover:border-slate-300 hover:shadow-md">
                               <div className="relative flex h-[280px] items-center justify-center overflow-hidden bg-slate-50 p-4">
-                                <div className="flex max-h-[240px] max-w-full items-center justify-center overflow-hidden rounded border border-slate-200 bg-white p-1 shadow-sm">
-                                  <PageComp
-                                    pageNumber={page.pageNumber}
-                                    width={170}
-                                    renderMode="canvas"
-                                    renderAnnotationLayer={false}
-                                    renderTextLayer={false}
-                                    loading={
-                                      <div className="flex h-[220px] w-[160px] items-center justify-center text-xs font-semibold text-slate-400">
-                                        Page {page.pageNumber}
-                                      </div>
-                                    }
-                                    error={
-                                      <div className="flex h-[220px] w-[160px] items-center justify-center text-center text-xs font-semibold text-red-500">
-                                        Page {page.pageNumber} failed
-                                      </div>
-                                    }
-                                  />
+                                <div className="relative flex max-h-[240px] max-w-full items-center justify-center overflow-hidden rounded border border-slate-200 bg-white p-1 shadow-sm">
+                                  <div className="relative inline-block">
+                                    <PageComp
+                                      key={`page-${page.pageNumber}-${index}-${rotation}`}
+                                      pageNumber={page.pageNumber}
+                                      width={170}
+                                      rotate={rotation}
+                                      renderMode="canvas"
+                                      renderAnnotationLayer={false}
+                                      renderTextLayer={false}
+                                      className="pointer-events-none select-none"
+                                      loading={
+                                        <div className="flex h-[220px] w-[160px] items-center justify-center text-xs font-semibold text-slate-400">
+                                          Page {page.pageNumber}
+                                        </div>
+                                      }
+                                      error={
+                                        <div className="flex h-[220px] w-[160px] items-center justify-center text-center text-xs font-semibold text-red-500">
+                                          Page {page.pageNumber} failed
+                                        </div>
+                                      }
+                                    />
+                                    {pageWhiteouts.map((rect, rectIndex) => (
+                                      <span
+                                        key={`${rect.id}-${rectIndex}`}
+                                        className="pointer-events-none absolute border border-white/80 bg-white/70"
+                                        style={{
+                                          left: `${rect.x * 100}%`,
+                                          top: `${rect.y * 100}%`,
+                                          width: `${rect.width * 100}%`,
+                                          height: `${rect.height * 100}%`,
+                                        }}
+                                      />
+                                    ))}
+                                  </div>
                                 </div>
+                                <div className="absolute inset-x-0 top-0 flex justify-center p-3 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
+                                  <div className="flex gap-1 rounded-lg border border-slate-200 bg-white p-1.5 shadow-lg">
+                                    <button
+                                      type="button"
+                                      onClick={() => rotatePage(page.pageNumber, "left")}
+                                      className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-all hover:bg-slate-50 active:scale-95"
+                                      title="Rotate left"
+                                      aria-label={`Rotate page ${page.pageNumber} left`}
+                                    >
+                                      <RotateCcw className="h-4 w-4" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => rotatePage(page.pageNumber, "right")}
+                                      className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-all hover:bg-slate-50 active:scale-95"
+                                      title="Rotate right"
+                                      aria-label={`Rotate page ${page.pageNumber} right`}
+                                    >
+                                      <RotateCw className="h-4 w-4" />
+                                    </button>
+                                    <div className="mx-0.5 w-px bg-slate-200" />
+                                    <button
+                                      type="button"
+                                      onClick={() => duplicatePageAt(index)}
+                                      className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-all hover:bg-slate-50 active:scale-95"
+                                      title="Duplicate page"
+                                      aria-label={`Duplicate page ${page.pageNumber}`}
+                                    >
+                                      <Copy className="h-4 w-4" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => openPreview(index)}
+                                      className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-all hover:bg-slate-50 active:scale-95"
+                                      title="Preview full page"
+                                      aria-label={`Preview page ${page.pageNumber}`}
+                                    >
+                                      <Eye className="h-4 w-4" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => openPreview(index, true)}
+                                      className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-all hover:bg-slate-50 active:scale-95"
+                                      title="Crop / hide area"
+                                      aria-label={`Crop or hide area on page ${page.pageNumber}`}
+                                    >
+                                      <Crop className="h-4 w-4" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => deletePageAt(index)}
+                                      disabled={pages.length <= 1}
+                                      className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 bg-white text-red-600 transition-all hover:bg-red-50 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+                                      title="Remove page from split plan"
+                                      aria-label={`Remove page ${page.pageNumber} from split plan`}
+                                    >
+                                      <Trash2 className="h-4 w-4" />
+                                    </button>
+                                  </div>
+                                </div>
+                                {(rotation !== 0 || pageWhiteouts.length > 0) && (
+                                  <div className="absolute bottom-3 right-3 flex gap-1">
+                                    {rotation !== 0 && (
+                                      <span className="rounded border border-slate-300 bg-white px-2 py-0.5 text-xs font-semibold text-slate-700 shadow-sm">
+                                        {rotation}°
+                                      </span>
+                                    )}
+                                    {pageWhiteouts.length > 0 && (
+                                      <span className="rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-800 shadow-sm">
+                                        {pageWhiteouts.length} crop{pageWhiteouts.length === 1 ? "" : "s"}
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
                               </div>
                               <div className="border-t border-slate-200 bg-slate-50 p-3">
                                 <div className="flex items-center justify-between gap-2">
@@ -1583,6 +1912,238 @@ const AddPage: React.FC = () => {
               {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}
               Save Summary Transactions
             </button>
+          </div>
+        </div>
+      )}
+
+      {hoverPreview && DocumentComp && PageComp && pdfFile && (
+        <div className="pointer-events-none fixed inset-y-4 right-4 z-40 hidden items-center lg:flex">
+          <div className="flex h-full max-h-[calc(100vh-2rem)] w-[460px] flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-950/95 shadow-2xl backdrop-blur">
+            <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Hover preview</p>
+                <p className="text-sm font-semibold text-white">Page {hoverPreview.pageNumber}</p>
+              </div>
+              <span className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs font-semibold text-slate-200">
+                {hoverPreview.rotation}°
+              </span>
+            </div>
+            <div className="flex flex-1 items-center justify-center overflow-auto p-3">
+              <DocumentComp file={pdfFile}>
+                <div className="relative inline-block rounded bg-white p-2">
+                  <PageComp
+                    pageNumber={hoverPreview.pageNumber}
+                    renderAnnotationLayer={false}
+                    renderTextLayer={false}
+                    height={typeof window !== "undefined" ? Math.max(360, Math.min(window.innerHeight - 190, 1000)) : 720}
+                    rotate={hoverPreview.rotation || 0}
+                    loading={
+                      <div className="flex h-[420px] w-[300px] items-center justify-center">
+                        <Loader2 className="h-8 w-8 animate-spin text-slate-500" />
+                      </div>
+                    }
+                  />
+                  {(whiteoutRegionsByPage[hoverPreview.pageNumber] || []).map((rect) => (
+                    <span
+                      key={`hover-${rect.id}`}
+                      className="pointer-events-none absolute border border-white/80 bg-white/70"
+                      style={{
+                        left: `${rect.x * 100}%`,
+                        top: `${rect.y * 100}%`,
+                        width: `${rect.width * 100}%`,
+                        height: `${rect.height * 100}%`,
+                      }}
+                    />
+                  ))}
+                </div>
+              </DocumentComp>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {previewPage && previewPosition !== null && DocumentComp && PageComp && pdfFile && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm sm:p-6"
+          onClick={() => {
+            setPreviewPosition(null);
+            setWhiteoutEditMode(false);
+            setWhiteoutDraft(null);
+          }}
+        >
+          <div
+            className="relative flex max-h-[95vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-900 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex flex-shrink-0 items-center justify-between border-b border-slate-800 p-4 sm:p-5">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-700 bg-slate-800 text-slate-100">
+                  <Eye className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-semibold text-white">Page Preview</h3>
+                  <p className="text-sm text-slate-400">
+                    Page {previewPage.pageNumber} ({previewPosition + 1} of {pages.length})
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setPreviewPosition(null);
+                  setWhiteoutEditMode(false);
+                  setWhiteoutDraft(null);
+                }}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-semibold text-white transition-all hover:bg-slate-700"
+              >
+                <X className="h-4 w-4" />
+                <span className="hidden sm:inline">Close</span>
+              </button>
+            </div>
+
+            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden bg-slate-950 p-4 sm:p-5">
+              <div className="flex flex-col gap-3 rounded-xl border border-slate-800 bg-slate-900/70 p-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Crop / hide area</p>
+                  <p className="text-sm text-slate-200">
+                    {whiteoutEditMode ? "Drag on the page to hide a region." : "Enable draw mode to hide a region on this page preview."}
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-200">
+                    {previewWhiteoutRects.length} region{previewWhiteoutRects.length === 1 ? "" : "s"}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setWhiteoutEditMode((prev) => !prev);
+                      setWhiteoutDraft(null);
+                    }}
+                    className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold shadow-sm transition ${
+                      whiteoutEditMode
+                        ? "border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-500"
+                        : "border-slate-700 bg-slate-800 text-white hover:bg-slate-700"
+                    }`}
+                  >
+                    <Crop className="h-4 w-4" />
+                    {whiteoutEditMode ? "Draw mode on" : "Draw crop"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => undoLastWhiteoutForPage(previewPage.pageNumber)}
+                    disabled={!previewWhiteoutRects.length}
+                    className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Undo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => clearWhiteoutsForPage(previewPage.pageNumber)}
+                    disabled={!previewWhiteoutRects.length}
+                    className="rounded-lg border border-red-700 bg-red-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto">
+                <div className="rounded-lg bg-white p-3 shadow-xl sm:p-4">
+                  <DocumentComp file={pdfFile}>
+                    <div className="relative inline-block" ref={previewSurfaceRef}>
+                      <PageComp
+                        key={`preview-${previewPage.pageNumber}-${rotations[previewPage.pageNumber] || 0}`}
+                        pageNumber={previewPage.pageNumber}
+                        renderMode="canvas"
+                        renderAnnotationLayer={false}
+                        renderTextLayer={false}
+                        width={typeof window !== "undefined" ? Math.max(280, Math.min(window.innerWidth - 120, 920)) : 720}
+                        rotate={rotations[previewPage.pageNumber] || 0}
+                        loading={
+                          <div className="flex h-[600px] w-[424px] items-center justify-center">
+                            <Loader2 className="h-10 w-10 animate-spin text-slate-900" />
+                          </div>
+                        }
+                      />
+                      <div
+                        className={`absolute inset-0 ${whiteoutEditMode ? "cursor-crosshair" : "pointer-events-none"}`}
+                        style={{ touchAction: "none" }}
+                        onPointerDown={handlePreviewWhiteoutPointerDown}
+                        onPointerMove={handlePreviewWhiteoutPointerMove}
+                        onPointerUp={handlePreviewWhiteoutPointerUp}
+                        onPointerCancel={handlePreviewWhiteoutPointerCancel}
+                      >
+                        {previewWhiteoutRects.map((rect, index) => (
+                          <button
+                            key={rect.id}
+                            type="button"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              if (whiteoutEditMode) removeWhiteoutRectForPage(previewPage.pageNumber, rect.id);
+                            }}
+                            onPointerDown={(event) => event.stopPropagation()}
+                            title={whiteoutEditMode ? `Region ${index + 1} (click to remove)` : `Region ${index + 1}`}
+                            className={`absolute border-2 ${
+                              whiteoutEditMode
+                                ? "border-slate-100 bg-white/40 hover:bg-white/55"
+                                : "pointer-events-none border-slate-100/70 bg-white/65"
+                            }`}
+                            style={{
+                              left: `${rect.x * 100}%`,
+                              top: `${rect.y * 100}%`,
+                              width: `${rect.width * 100}%`,
+                              height: `${rect.height * 100}%`,
+                            }}
+                          />
+                        ))}
+                        {previewDraftRect && whiteoutEditMode && (
+                          <div
+                            className="absolute border-2 border-dashed border-emerald-300 bg-white/35"
+                            style={{
+                              left: `${previewDraftRect.x * 100}%`,
+                              top: `${previewDraftRect.y * 100}%`,
+                              width: `${previewDraftRect.width * 100}%`,
+                              height: `${previewDraftRect.height * 100}%`,
+                            }}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  </DocumentComp>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-shrink-0 items-center justify-between border-t border-slate-800 p-4 sm:p-5">
+              <button
+                type="button"
+                onClick={() => {
+                  if (previewPosition > 0) setPreviewPosition(previewPosition - 1);
+                  setWhiteoutDraft(null);
+                }}
+                disabled={previewPosition === 0}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <ChevronLeft className="h-4 w-4" />
+                <span className="hidden sm:inline">Previous</span>
+              </button>
+              <div className="rounded-lg border border-slate-800 bg-slate-800/50 px-3 py-2 text-center text-sm text-slate-200">
+                Rotation: <span className="font-semibold text-white">{rotations[previewPage.pageNumber] || 0}°</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (previewPosition < pages.length - 1) setPreviewPosition(previewPosition + 1);
+                  setWhiteoutDraft(null);
+                }}
+                disabled={previewPosition === pages.length - 1}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <span className="hidden sm:inline">Next</span>
+                <ChevronRight className="h-4 w-4" />
+              </button>
+            </div>
           </div>
         </div>
       )}
