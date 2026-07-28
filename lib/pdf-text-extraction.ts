@@ -10,9 +10,13 @@ export type PdfTextExtractionResult = {
   text: string;
   hasTextLayer: boolean;
   pageErrors: Array<{ pageNumber: number; error: string }>;
+  textTruncated: boolean;
+  skippedTextPages: number;
 };
 
 const MIN_VALID_LETTER_COUNT = 40;
+const DEFAULT_MAX_TEXT_BYTES = 2_500_000;
+const DEFAULT_MAX_PAGE_TEXT_CHARS = 12_000;
 
 let canvasModulePromise: Promise<typeof import("@napi-rs/canvas")> | null = null;
 
@@ -96,7 +100,14 @@ function hasMeaningfulText(text: string) {
   return letterCount >= MIN_VALID_LETTER_COUNT;
 }
 
-export async function extractPdfTextPages(pdfBytes: Uint8Array): Promise<PdfTextExtractionResult> {
+export async function extractPdfTextPages(
+  pdfBytes: Uint8Array,
+  opts?: {
+    metadataOnly?: boolean;
+    maxTextBytes?: number;
+    maxPageTextChars?: number;
+  },
+): Promise<PdfTextExtractionResult> {
   const pdfjs = await importPdfJs();
   const loadingTask = pdfjs.getDocument({
     data: pdfBytes,
@@ -108,16 +119,43 @@ export async function extractPdfTextPages(pdfBytes: Uint8Array): Promise<PdfText
   const pageCount = Number(pdf.numPages) || 0;
   const pages: PdfPageText[] = [];
   const pageErrors: Array<{ pageNumber: number; error: string }> = [];
+  const metadataOnly = opts?.metadataOnly === true;
+  const maxTextBytes = Math.max(0, opts?.maxTextBytes ?? DEFAULT_MAX_TEXT_BYTES);
+  const maxPageTextChars = Math.max(0, opts?.maxPageTextChars ?? DEFAULT_MAX_PAGE_TEXT_CHARS);
+  let textBytes = 0;
+  let textTruncated = false;
+  let skippedTextPages = 0;
 
   try {
     for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+      if (metadataOnly || textBytes >= maxTextBytes) {
+        pages.push({ pageNumber, text: "" });
+        skippedTextPages += 1;
+        if (!metadataOnly) textTruncated = true;
+        continue;
+      }
+
       let page: any | null = null;
       try {
         page = await pdf.getPage(pageNumber);
         const textContent = await page.getTextContent();
+        let text = normalizeTextItems(textContent.items || []);
+        if (maxPageTextChars && text.length > maxPageTextChars) {
+          text = text.slice(0, maxPageTextChars).trimEnd();
+          textTruncated = true;
+        }
+
+        const nextBytes = Buffer.byteLength(text, "utf8");
+        if (textBytes + nextBytes > maxTextBytes) {
+          const remaining = Math.max(0, maxTextBytes - textBytes);
+          text = remaining ? text.slice(0, remaining).trimEnd() : "";
+          textTruncated = true;
+        }
+
+        textBytes += Buffer.byteLength(text, "utf8");
         pages.push({
           pageNumber,
-          text: normalizeTextItems(textContent.items || []),
+          text,
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to extract page text.";
@@ -145,5 +183,7 @@ export async function extractPdfTextPages(pdfBytes: Uint8Array): Promise<PdfText
     text,
     hasTextLayer: hasMeaningfulText(text),
     pageErrors,
+    textTruncated,
+    skippedTextPages,
   };
 }

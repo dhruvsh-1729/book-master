@@ -22,14 +22,30 @@ type ExtractPdfResponse =
       hasTextLayer: boolean;
       manualTextRecommended: boolean;
       pageErrors: Array<{ pageNumber: number; error: string }>;
+      textTruncated: boolean;
+      skippedTextPages: number;
     }
   | { error: string };
 
-async function parseForm(req: NextApiRequest): Promise<File> {
+const toFieldString = (value: unknown) =>
+  typeof value === "string" ? value : Array.isArray(value) ? String(value[0] || "") : "";
+
+const toPositiveInt = (value: unknown, fallback: number, max: number) => {
+  const parsed = Number.parseInt(toFieldString(value), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(parsed, max);
+};
+
+async function parseForm(req: NextApiRequest): Promise<{
+  file: File;
+  metadataOnly: boolean;
+  maxTextBytes: number;
+  maxPageTextChars: number;
+}> {
   const form = formidable({ multiples: false, maxFileSize: MAX_FILE_SIZE });
 
   return new Promise((resolve, reject) => {
-    form.parse(req, (err, _fields, files) => {
+    form.parse(req, (err, fields, files) => {
       if (err) return reject(err);
 
       const fileAny = (files.pdf || files.file) as File | File[] | undefined;
@@ -41,7 +57,12 @@ async function parseForm(req: NextApiRequest): Promise<File> {
         file.mimetype === "application/pdf" || /\.pdf$/i.test(originalName);
       if (!looksLikePdf) return reject(new Error("Only PDF files can be extracted."));
 
-      resolve(file);
+      resolve({
+        file,
+        metadataOnly: ["true", "1", "yes"].includes(toFieldString(fields.metadataOnly).toLowerCase()),
+        maxTextBytes: toPositiveInt(fields.maxTextBytes, 2_500_000, 4_000_000),
+        maxPageTextChars: toPositiveInt(fields.maxPageTextChars, 12_000, 25_000),
+      });
     });
   });
 }
@@ -56,13 +77,17 @@ export default async function handler(
   }
 
   try {
-    const file = await parseForm(req);
+    const { file, metadataOnly, maxTextBytes, maxPageTextChars } = await parseForm(req);
     const pdfBytes = new Uint8Array(await fs.readFile(file.filepath));
-    const result = await extractPdfTextPages(pdfBytes);
+    const result = await extractPdfTextPages(pdfBytes, {
+      metadataOnly,
+      maxTextBytes,
+      maxPageTextChars,
+    });
 
     return res.status(200).json({
       ...result,
-      manualTextRecommended: !result.hasTextLayer,
+      manualTextRecommended: metadataOnly || result.textTruncated || !result.hasTextLayer,
     });
   } catch (error) {
     console.error("POST /api/add/extract-pdf error", error);

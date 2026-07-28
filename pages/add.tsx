@@ -61,7 +61,10 @@ type PdfExtractionResponse = {
   hasTextLayer: boolean;
   manualTextRecommended: boolean;
   pageErrors?: Array<{ pageNumber: number; error: string }>;
-  source?: "server" | "browser";
+  textTruncated?: boolean;
+  skippedTextPages?: number;
+  lowMemoryMode?: boolean;
+  source?: "server" | "browser" | "deferred";
 };
 
 type AddPromptTemplateView = {
@@ -145,6 +148,15 @@ const fileSize = (bytes: number) => {
 
 const PAGE_MARKER_RE = /^\s*(?:[-=_*#]{2,}\s*)?(?:page|pg|p\.)\s*[:#-]?\s*(\d{1,5})(?:\s*(?:[-=_*#]{2,}|\/\s*\d+))?\s*$/i;
 const INLINE_PAGE_MARKER_RE = /---\s*Page\s+(\d{1,5})\s*---/gi;
+const LARGE_PDF_BYTES = 25 * 1024 * 1024;
+const LOW_MEMORY_LARGE_PDF_BYTES = 8 * 1024 * 1024;
+const LOW_MEMORY_MAX_TEXT_BYTES = 800_000;
+const NORMAL_MAX_TEXT_BYTES = 2_500_000;
+const LOW_MEMORY_PAGE_TEXT_CHARS = 6_000;
+const NORMAL_PAGE_TEXT_CHARS = 12_000;
+const MOBILE_PAGE_WINDOW = 4;
+const TABLET_PAGE_WINDOW = 6;
+const DESKTOP_PAGE_WINDOW = 12;
 
 const normalizePdfText = (value: string) =>
   value
@@ -156,6 +168,60 @@ const normalizePdfText = (value: string) =>
 const hasUsefulText = (value: string) => {
   const letters = (value.match(/\p{L}/gu) || value.match(/[A-Za-z]/g) || []).length;
   return letters >= 40;
+};
+
+const getDeviceMemoryGb = () => {
+  if (typeof navigator === "undefined") return null;
+  const memory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
+  return typeof memory === "number" && Number.isFinite(memory) ? memory : null;
+};
+
+const getPdfImportProfile = (file: File) => {
+  const deviceMemoryGb = getDeviceMemoryGb();
+  const lowMemoryDevice = Boolean(deviceMemoryGb && deviceMemoryGb <= 4);
+  const mobileViewport = typeof window !== "undefined" && window.innerWidth < 768;
+  const largePdf = file.size >= LARGE_PDF_BYTES;
+  const largeForLowMemory = file.size >= LOW_MEMORY_LARGE_PDF_BYTES && (lowMemoryDevice || mobileViewport);
+  const lowMemoryMode = largePdf || largeForLowMemory;
+
+  return {
+    lowMemoryMode,
+    metadataOnly: lowMemoryMode,
+    skipCover: lowMemoryMode,
+    maxTextBytes: lowMemoryDevice || mobileViewport ? LOW_MEMORY_MAX_TEXT_BYTES : NORMAL_MAX_TEXT_BYTES,
+    maxPageTextChars: lowMemoryDevice || mobileViewport ? LOW_MEMORY_PAGE_TEXT_CHARS : NORMAL_PAGE_TEXT_CHARS,
+  };
+};
+
+const getResponsivePageWindowSize = () => {
+  if (typeof window === "undefined") return DESKTOP_PAGE_WINDOW;
+  const deviceMemoryGb = getDeviceMemoryGb();
+  if (window.innerWidth < 640) return Math.min(MOBILE_PAGE_WINDOW, deviceMemoryGb && deviceMemoryGb <= 4 ? 3 : MOBILE_PAGE_WINDOW);
+  if (window.innerWidth < 1024) return TABLET_PAGE_WINDOW;
+  return DESKTOP_PAGE_WINDOW;
+};
+
+const createBrowserPdfLoadParams = async (file: File, objectUrl?: string) => {
+  let ownedObjectUrl = "";
+  const canCreateObjectUrl =
+    typeof URL !== "undefined" &&
+    typeof URL.createObjectURL === "function" &&
+    typeof URL.revokeObjectURL === "function";
+  const url = objectUrl || (canCreateObjectUrl ? (ownedObjectUrl = URL.createObjectURL(file)) : "");
+
+  if (url) {
+    return {
+      params: { url },
+      revoke: () => {
+        if (ownedObjectUrl && canCreateObjectUrl) URL.revokeObjectURL(ownedObjectUrl);
+      },
+    };
+  }
+
+  return {
+    params: { data: new Uint8Array(await file.arrayBuffer()) },
+    revoke: () => {},
+  };
 };
 
 const parseExtractedTextFile = (raw: string): { pageTextMap: PageTextMap; pageCount: number; mode: "markers" | "page-breaks" | "single" } => {
@@ -252,16 +318,17 @@ const sectionToExtractedText = (chunk: ExtractedPage[]) =>
     .join("\n\n")
     .trim();
 
-const renderCoverFromPdf = async (file: File) => {
+const renderCoverFromPdf = async (file: File, objectUrl?: string) => {
   const pdfjs = await import("pdfjs-dist/webpack.mjs");
-  const data = new Uint8Array(await file.arrayBuffer());
-  const task = pdfjs.getDocument({ data });
+  const { params, revoke } = await createBrowserPdfLoadParams(file, objectUrl);
+  const task = pdfjs.getDocument(params);
   const pdf = await task.promise;
   let coverDataUrl = "";
   let coverBlob: Blob | null = null;
+  let page: any | null = null;
 
   try {
-    const page = await pdf.getPage(1);
+    page = await pdf.getPage(1);
     const baseViewport = page.getViewport({ scale: 1 });
     const scale = Math.min(1.8, Math.max(0.8, 760 / baseViewport.width));
     const viewport = page.getViewport({ scale });
@@ -274,18 +341,25 @@ const renderCoverFromPdf = async (file: File) => {
       coverDataUrl = canvas.toDataURL("image/webp", 0.72);
       coverBlob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/webp", 0.72));
     }
-    page.cleanup?.();
   } finally {
+    page?.cleanup?.();
     pdf?.cleanup?.();
     task?.destroy?.();
+    revoke();
   }
 
   return { coverDataUrl, coverBlob };
 };
 
-const extractPdfTextOnServer = async (file: File): Promise<PdfExtractionResponse> => {
+const extractPdfTextOnServer = async (
+  file: File,
+  profile: ReturnType<typeof getPdfImportProfile>
+): Promise<PdfExtractionResponse> => {
   const formData = new FormData();
   formData.append("pdf", file);
+  formData.append("metadataOnly", profile.metadataOnly ? "true" : "false");
+  formData.append("maxTextBytes", String(profile.maxTextBytes));
+  formData.append("maxPageTextChars", String(profile.maxPageTextChars));
   const response = await fetch("/api/add/extract-pdf", { method: "POST", body: formData });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -301,14 +375,45 @@ const extractPdfTextOnServer = async (file: File): Promise<PdfExtractionResponse
     hasTextLayer: Boolean(data.hasTextLayer),
     manualTextRecommended: Boolean(data.manualTextRecommended),
     pageErrors: Array.isArray(data.pageErrors) ? data.pageErrors : [],
+    textTruncated: Boolean(data.textTruncated),
+    skippedTextPages: Number(data.skippedTextPages) || 0,
+    lowMemoryMode: profile.lowMemoryMode,
     source: "server",
   };
 };
 
-const extractPdfTextInBrowser = async (file: File): Promise<PdfExtractionResponse> => {
+const getPdfPageCountInBrowser = async (file: File, objectUrl?: string): Promise<PdfExtractionResponse> => {
   const pdfjs = await import("pdfjs-dist/webpack.mjs");
-  const data = new Uint8Array(await file.arrayBuffer());
-  const task = pdfjs.getDocument({ data });
+  const { params, revoke } = await createBrowserPdfLoadParams(file, objectUrl);
+  const task = pdfjs.getDocument(params);
+  let pdf: any | null = null;
+
+  try {
+    pdf = await task.promise;
+    const pageCount = Number(pdf.numPages) || 0;
+    return {
+      pageCount,
+      pages: ensurePageList(pageCount),
+      text: "",
+      hasTextLayer: false,
+      manualTextRecommended: true,
+      pageErrors: [],
+      textTruncated: false,
+      skippedTextPages: pageCount,
+      source: "deferred",
+    };
+  } finally {
+    pdf?.cleanup?.();
+    pdf?.destroy?.();
+    task?.destroy?.();
+    revoke();
+  }
+};
+
+const extractPdfTextInBrowser = async (file: File, objectUrl?: string): Promise<PdfExtractionResponse> => {
+  const pdfjs = await import("pdfjs-dist/webpack.mjs");
+  const { params, revoke } = await createBrowserPdfLoadParams(file, objectUrl);
+  const task = pdfjs.getDocument(params);
   const pdf = await task.promise;
   const pageCount = Number(pdf.numPages) || 0;
   const pages: ExtractedPage[] = [];
@@ -340,6 +445,7 @@ const extractPdfTextInBrowser = async (file: File): Promise<PdfExtractionRespons
   } finally {
     pdf?.cleanup?.();
     task?.destroy?.();
+    revoke();
   }
 
   const text = pages
@@ -359,13 +465,28 @@ const extractPdfTextInBrowser = async (file: File): Promise<PdfExtractionRespons
   };
 };
 
-const parsePdf = async (file: File) => {
+const parsePdf = async (file: File, objectUrl?: string) => {
+  const profile = getPdfImportProfile(file);
+  if (profile.lowMemoryMode) {
+    const metadata = await getPdfPageCountInBrowser(file, objectUrl);
+    return {
+      ...metadata,
+      lowMemoryMode: true,
+      coverDataUrl: "",
+      coverBlob: null as Blob | null,
+    };
+  }
+
   const [extractionResult, coverResult] = await Promise.allSettled([
-    extractPdfTextOnServer(file).catch(async (error) => {
-      console.warn("Server PDF extraction failed; using browser fallback", error);
-      return extractPdfTextInBrowser(file);
+    extractPdfTextOnServer(file, profile).catch(async (error) => {
+      if (file.size >= LOW_MEMORY_LARGE_PDF_BYTES) {
+        console.warn("Server PDF extraction failed; using metadata-only browser fallback", error);
+        return getPdfPageCountInBrowser(file, objectUrl);
+      }
+      console.warn("Server PDF extraction failed; using browser text fallback", error);
+      return extractPdfTextInBrowser(file, objectUrl);
     }),
-    renderCoverFromPdf(file),
+    profile.skipCover ? Promise.resolve({ coverDataUrl: "", coverBlob: null as Blob | null }) : renderCoverFromPdf(file, objectUrl),
   ]);
 
   if (extractionResult.status === "rejected") throw extractionResult.reason;
@@ -382,6 +503,7 @@ const parsePdf = async (file: File) => {
   return {
     ...extractionResult.value,
     pages: ensurePageList(extractionResult.value.pageCount, extractionResult.value.pages),
+    lowMemoryMode: profile.lowMemoryMode || extractionResult.value.source === "deferred",
     coverDataUrl: cover.coverDataUrl,
     coverBlob: cover.coverBlob,
   };
@@ -510,15 +632,19 @@ const AddPage: React.FC = () => {
   const [promptError, setPromptError] = useState("");
   const [manualTextBusy, setManualTextBusy] = useState(false);
   const [manualTextInfo, setManualTextInfo] = useState<{ fileName: string; pageCount: number; mode: string } | null>(null);
-  const [pdfTextSource, setPdfTextSource] = useState<"server" | "browser" | "txt" | null>(null);
+  const [pdfTextSource, setPdfTextSource] = useState<"server" | "browser" | "txt" | "deferred" | null>(null);
+  const [pdfObjectUrl, setPdfObjectUrl] = useState("");
   const [rotations, setRotations] = useState<Record<number, number>>({});
   const [hoverPreview, setHoverPreview] = useState<{ pageNumber: number; rotation: number } | null>(null);
   const [previewPosition, setPreviewPosition] = useState<number | null>(null);
   const [whiteoutRegionsByPage, setWhiteoutRegionsByPage] = useState<Record<number, WhiteoutRect[]>>({});
   const [whiteoutEditMode, setWhiteoutEditMode] = useState(false);
   const [whiteoutDraft, setWhiteoutDraft] = useState<WhiteoutDraft | null>(null);
+  const [pageWindowStart, setPageWindowStart] = useState(0);
+  const [pageWindowSize, setPageWindowSize] = useState(DESKTOP_PAGE_WINDOW);
   const DocumentComp = reactPdf?.Document;
   const PageComp = reactPdf?.Page;
+  const pdfDocumentSource = pdfObjectUrl || pdfFile;
 
   const selectedForReview = useMemo(
     () => drafts.filter((draft) => draft.subjectReviewStatus === "needs_review").length,
@@ -526,6 +652,15 @@ const AddPage: React.FC = () => {
   );
 
   const manualSections = useMemo(() => getSectionsFromPages(pages, splitIndices), [pages, splitIndices]);
+  const pageWindowEnd = Math.min(pages.length, pageWindowStart + pageWindowSize);
+  const visiblePageEntries = useMemo(
+    () =>
+      pages.slice(pageWindowStart, pageWindowEnd).map((page, offset) => ({
+        page,
+        index: pageWindowStart + offset,
+      })),
+    [pageWindowEnd, pageWindowStart, pages]
+  );
 
   const previewPage =
     previewPosition !== null && previewPosition >= 0 && previewPosition < pages.length
@@ -550,6 +685,38 @@ const AddPage: React.FC = () => {
   useEffect(() => {
     setIsClient(true);
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const updateWindowSize = () => setPageWindowSize(getResponsivePageWindowSize());
+    updateWindowSize();
+    window.addEventListener("resize", updateWindowSize);
+    return () => window.removeEventListener("resize", updateWindowSize);
+  }, []);
+
+  useEffect(() => {
+    if (
+      !pdfFile ||
+      typeof URL === "undefined" ||
+      typeof URL.createObjectURL !== "function" ||
+      typeof URL.revokeObjectURL !== "function"
+    ) {
+      setPdfObjectUrl("");
+      return;
+    }
+
+    const objectUrl = URL.createObjectURL(pdfFile);
+    setPdfObjectUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [pdfFile]);
+
+  useEffect(() => {
+    setPageWindowStart((current) => {
+      if (!pages.length) return 0;
+      const maxStart = Math.max(0, pages.length - pageWindowSize);
+      return Math.min(current, maxStart);
+    });
+  }, [pageWindowSize, pages.length]);
 
   useEffect(() => {
     if (!isClient) return;
@@ -610,6 +777,7 @@ const AddPage: React.FC = () => {
     setCoverPreview("");
     setManualTextInfo(null);
     setPdfTextSource(null);
+    setPageWindowStart(0);
     resetPageTools();
   };
 
@@ -795,8 +963,9 @@ const AddPage: React.FC = () => {
       if (!createResponse.ok) throw new Error(created?.error || "Failed to create book");
       setCreatedBook(created as BookMaster);
 
-      setBusyMessage("Extracting PDF text and cover");
-      const parsed = await parsePdf(pdfFile);
+      const importProfile = getPdfImportProfile(pdfFile);
+      setBusyMessage(importProfile.lowMemoryMode ? "Reading PDF page count" : "Extracting PDF text and cover");
+      const parsed = await parsePdf(pdfFile, pdfObjectUrl || undefined);
       setPages(parsed.pages);
       setPdfPageCount(parsed.pageCount || parsed.pages.length);
       setPdfTextSource(parsed.source || null);
@@ -823,15 +992,27 @@ const AddPage: React.FC = () => {
 
       setSplitIndices(new Set());
       setDrafts([]);
+      setPageWindowStart(0);
       resetPageTools();
       const extractedPageCount = parsed.pages.filter((page) => page.text.trim()).length;
-      const extractionSource = parsed.source === "browser" ? "locally in the browser" : "on the Node server";
+      const extractionSource =
+        parsed.source === "browser"
+          ? "locally in the browser"
+          : parsed.source === "deferred"
+            ? "from PDF metadata only"
+            : "on the Node server";
       const pageErrorCount = parsed.pageErrors?.length || 0;
+      const lowMemoryNote = parsed.lowMemoryMode
+        ? " Large-PDF low-memory mode is active, so automatic text extraction and cover rendering were limited; upload the extracted .txt file for complete text."
+        : parsed.textTruncated
+          ? " Automatic text extraction was capped to keep the browser stable; upload the extracted .txt file for complete text."
+          : "";
       setAlert({
-        type: parsed.manualTextRecommended || pageErrorCount ? "warning" : "success",
-        message: parsed.manualTextRecommended
-          ? `Book saved and ${parsed.pages.length} page(s) loaded. No usable PDF text layer was found ${extractionSource}; upload the extracted .txt file before creating transaction drafts.`
-          : `Book saved. Text was extracted ${extractionSource} for ${extractedPageCount}/${parsed.pages.length} page(s). Review the pages and add split cuts before creating transactions.${pageErrorCount ? ` ${pageErrorCount} page(s) had text extraction warnings.` : ""}`,
+        type: parsed.manualTextRecommended || pageErrorCount || parsed.lowMemoryMode || parsed.textTruncated ? "warning" : "success",
+        message:
+          parsed.manualTextRecommended || parsed.lowMemoryMode || parsed.textTruncated
+            ? `Book saved and ${parsed.pages.length} page(s) loaded.${lowMemoryNote || ` No usable PDF text layer was found ${extractionSource}; upload the extracted .txt file before creating transaction drafts.`}`
+            : `Book saved. Text was extracted ${extractionSource} for ${extractedPageCount}/${parsed.pages.length} page(s). Review the pages and add split cuts before creating transactions.${pageErrorCount ? ` ${pageErrorCount} page(s) had text extraction warnings.` : ""}`,
       });
     } catch (error: any) {
       setAlert({ type: "error", message: error?.message || "Failed to prepare PDF import." });
@@ -1442,148 +1623,184 @@ const AddPage: React.FC = () => {
           <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
             <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
               {pages.length ? (
-                isClient && DocumentComp && PageComp && pdfFile ? (
-                  <DocumentComp
-                    file={pdfFile}
-                    onLoadSuccess={handleDocumentLoadSuccess}
-                    loading={
-                      <div className="flex min-h-[180px] items-center justify-center gap-2 text-sm text-slate-500">
-                        <LoadingSpinner size="sm" />
-                        Loading PDF pages
+                isClient && DocumentComp && PageComp && pdfDocumentSource ? (
+                  <>
+                    <div className="mb-4 flex flex-col gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-900">
+                          Showing pages {pageWindowStart + 1}-{pageWindowEnd} of {pages.length}
+                        </p>
+                        <p className="text-xs leading-5 text-slate-500">
+                          Only {Math.min(pageWindowSize, pages.length)} page preview{Math.min(pageWindowSize, pages.length) === 1 ? "" : "s"} render at once.
+                        </p>
                       </div>
-                    }
-                    error={
-                      <div className="flex min-h-[180px] items-center justify-center rounded-lg border border-red-200 bg-red-50 p-4 text-sm font-medium text-red-700">
-                        Unable to render PDF pages in this browser.
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setPageWindowStart((start) => Math.max(0, start - pageWindowSize))}
+                          disabled={pageWindowStart === 0}
+                          className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <ChevronLeft className="mr-1 h-4 w-4" />
+                          Previous
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setPageWindowStart((start) =>
+                              Math.min(Math.max(0, pages.length - pageWindowSize), start + pageWindowSize)
+                            )
+                          }
+                          disabled={pageWindowEnd >= pages.length}
+                          className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          Next
+                          <ChevronRight className="ml-1 h-4 w-4" />
+                        </button>
                       </div>
-                    }
-                  >
-                    <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                      {pages.map((page, index) => {
-                        const isSplit = splitIndices.has(index);
-                        const isLast = index === pages.length - 1;
-                        const rotation = rotations[page.pageNumber] || 0;
-                        const pageWhiteouts = whiteoutRegionsByPage[page.pageNumber] || [];
-                        return (
-                          <div
-                            key={`${page.pageNumber}-${index}`}
-                            className="group relative overflow-visible"
-                            onMouseEnter={() => setHoverPreview({ pageNumber: page.pageNumber, rotation })}
-                            onMouseLeave={() => setHoverPreview(null)}
-                          >
-                            <div className="relative overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm transition-all duration-200 hover:-translate-y-1 hover:border-slate-300 hover:shadow-md">
-                              <div className="relative flex h-[280px] items-center justify-center overflow-hidden bg-slate-50 p-4">
-                                <div className="relative flex max-h-[240px] max-w-full items-center justify-center overflow-hidden rounded border border-slate-200 bg-white p-1 shadow-sm">
-                                  <div className="relative inline-block">
-                                    <PageComp
-                                      key={`page-${page.pageNumber}-${index}-${rotation}`}
-                                      pageNumber={page.pageNumber}
-                                      width={170}
-                                      rotate={rotation}
-                                      renderMode="canvas"
-                                      renderAnnotationLayer={false}
-                                      renderTextLayer={false}
-                                      className="pointer-events-none select-none"
-                                      loading={
-                                        <div className="flex h-[220px] w-[160px] items-center justify-center text-xs font-semibold text-slate-400">
-                                          Page {page.pageNumber}
-                                        </div>
-                                      }
-                                      error={
-                                        <div className="flex h-[220px] w-[160px] items-center justify-center text-center text-xs font-semibold text-red-500">
-                                          Page {page.pageNumber} failed
-                                        </div>
-                                      }
-                                    />
-                                    {pageWhiteouts.map((rect, rectIndex) => (
-                                      <span
-                                        key={`${rect.id}-${rectIndex}`}
-                                        className="pointer-events-none absolute border border-white/80 bg-white/70"
-                                        style={{
-                                          left: `${rect.x * 100}%`,
-                                          top: `${rect.y * 100}%`,
-                                          width: `${rect.width * 100}%`,
-                                          height: `${rect.height * 100}%`,
-                                        }}
+                    </div>
+
+                    <DocumentComp
+                      file={pdfDocumentSource}
+                      onLoadSuccess={handleDocumentLoadSuccess}
+                      loading={
+                        <div className="flex min-h-[180px] items-center justify-center gap-2 text-sm text-slate-500">
+                          <LoadingSpinner size="sm" />
+                          Loading PDF pages
+                        </div>
+                      }
+                      error={
+                        <div className="flex min-h-[180px] items-center justify-center rounded-lg border border-red-200 bg-red-50 p-4 text-sm font-medium text-red-700">
+                          Unable to render PDF pages in this browser.
+                        </div>
+                      }
+                    >
+                      <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                        {visiblePageEntries.map(({ page, index }) => {
+                          const isSplit = splitIndices.has(index);
+                          const isLast = index === pages.length - 1;
+                          const rotation = rotations[page.pageNumber] || 0;
+                          const pageWhiteouts = whiteoutRegionsByPage[page.pageNumber] || [];
+                          return (
+                            <div
+                              key={`${page.pageNumber}-${index}`}
+                              className="group relative overflow-visible"
+                              onMouseEnter={() => setHoverPreview({ pageNumber: page.pageNumber, rotation })}
+                              onMouseLeave={() => setHoverPreview(null)}
+                            >
+                              <div className="relative overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm transition-all duration-200 hover:-translate-y-1 hover:border-slate-300 hover:shadow-md">
+                                <div className="relative flex h-[280px] items-center justify-center overflow-hidden bg-slate-50 p-4">
+                                  <div className="relative flex max-h-[240px] max-w-full items-center justify-center overflow-hidden rounded border border-slate-200 bg-white p-1 shadow-sm">
+                                    <div className="relative inline-block">
+                                      <PageComp
+                                        key={`page-${page.pageNumber}-${index}-${rotation}`}
+                                        pageNumber={page.pageNumber}
+                                        width={170}
+                                        rotate={rotation}
+                                        renderMode="canvas"
+                                        renderAnnotationLayer={false}
+                                        renderTextLayer={false}
+                                        className="pointer-events-none select-none"
+                                        loading={
+                                          <div className="flex h-[220px] w-[160px] items-center justify-center text-xs font-semibold text-slate-400">
+                                            Page {page.pageNumber}
+                                          </div>
+                                        }
+                                        error={
+                                          <div className="flex h-[220px] w-[160px] items-center justify-center text-center text-xs font-semibold text-red-500">
+                                            Page {page.pageNumber} failed
+                                          </div>
+                                        }
                                       />
-                                    ))}
+                                      {pageWhiteouts.map((rect, rectIndex) => (
+                                        <span
+                                          key={`${rect.id}-${rectIndex}`}
+                                          className="pointer-events-none absolute border border-white/80 bg-white/70"
+                                          style={{
+                                            left: `${rect.x * 100}%`,
+                                            top: `${rect.y * 100}%`,
+                                            width: `${rect.width * 100}%`,
+                                            height: `${rect.height * 100}%`,
+                                          }}
+                                        />
+                                      ))}
+                                    </div>
                                   </div>
+                                  <div className="absolute inset-x-0 top-0 flex justify-center p-3 opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100">
+                                    <div className="flex gap-1 rounded-lg border border-slate-200 bg-white p-1.5 shadow-lg">
+                                      <button
+                                        type="button"
+                                        onClick={() => rotatePage(page.pageNumber, "left")}
+                                        className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-all hover:bg-slate-50 active:scale-95"
+                                        title="Rotate left"
+                                        aria-label={`Rotate page ${page.pageNumber} left`}
+                                      >
+                                        <RotateCcw className="h-4 w-4" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => rotatePage(page.pageNumber, "right")}
+                                        className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-all hover:bg-slate-50 active:scale-95"
+                                        title="Rotate right"
+                                        aria-label={`Rotate page ${page.pageNumber} right`}
+                                      >
+                                        <RotateCw className="h-4 w-4" />
+                                      </button>
+                                      <div className="mx-0.5 w-px bg-slate-200" />
+                                      <button
+                                        type="button"
+                                        onClick={() => duplicatePageAt(index)}
+                                        className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-all hover:bg-slate-50 active:scale-95"
+                                        title="Duplicate page"
+                                        aria-label={`Duplicate page ${page.pageNumber}`}
+                                      >
+                                        <Copy className="h-4 w-4" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => openPreview(index)}
+                                        className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-all hover:bg-slate-50 active:scale-95"
+                                        title="Preview full page"
+                                        aria-label={`Preview page ${page.pageNumber}`}
+                                      >
+                                        <Eye className="h-4 w-4" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => openPreview(index, true)}
+                                        className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-all hover:bg-slate-50 active:scale-95"
+                                        title="Crop / hide area"
+                                        aria-label={`Crop or hide area on page ${page.pageNumber}`}
+                                      >
+                                        <Crop className="h-4 w-4" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => deletePageAt(index)}
+                                        disabled={pages.length <= 1}
+                                        className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 bg-white text-red-600 transition-all hover:bg-red-50 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+                                        title="Remove page from split plan"
+                                        aria-label={`Remove page ${page.pageNumber} from split plan`}
+                                      >
+                                        <Trash2 className="h-4 w-4" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                  {(rotation !== 0 || pageWhiteouts.length > 0) && (
+                                    <div className="absolute bottom-3 right-3 flex gap-1">
+                                      {rotation !== 0 && (
+                                        <span className="rounded border border-slate-300 bg-white px-2 py-0.5 text-xs font-semibold text-slate-700 shadow-sm">
+                                          {rotation}°
+                                        </span>
+                                      )}
+                                      {pageWhiteouts.length > 0 && (
+                                        <span className="rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-800 shadow-sm">
+                                          {pageWhiteouts.length} crop{pageWhiteouts.length === 1 ? "" : "s"}
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
                                 </div>
-                                <div className="absolute inset-x-0 top-0 flex justify-center p-3 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
-                                  <div className="flex gap-1 rounded-lg border border-slate-200 bg-white p-1.5 shadow-lg">
-                                    <button
-                                      type="button"
-                                      onClick={() => rotatePage(page.pageNumber, "left")}
-                                      className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-all hover:bg-slate-50 active:scale-95"
-                                      title="Rotate left"
-                                      aria-label={`Rotate page ${page.pageNumber} left`}
-                                    >
-                                      <RotateCcw className="h-4 w-4" />
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => rotatePage(page.pageNumber, "right")}
-                                      className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-all hover:bg-slate-50 active:scale-95"
-                                      title="Rotate right"
-                                      aria-label={`Rotate page ${page.pageNumber} right`}
-                                    >
-                                      <RotateCw className="h-4 w-4" />
-                                    </button>
-                                    <div className="mx-0.5 w-px bg-slate-200" />
-                                    <button
-                                      type="button"
-                                      onClick={() => duplicatePageAt(index)}
-                                      className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-all hover:bg-slate-50 active:scale-95"
-                                      title="Duplicate page"
-                                      aria-label={`Duplicate page ${page.pageNumber}`}
-                                    >
-                                      <Copy className="h-4 w-4" />
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => openPreview(index)}
-                                      className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-all hover:bg-slate-50 active:scale-95"
-                                      title="Preview full page"
-                                      aria-label={`Preview page ${page.pageNumber}`}
-                                    >
-                                      <Eye className="h-4 w-4" />
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => openPreview(index, true)}
-                                      className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-all hover:bg-slate-50 active:scale-95"
-                                      title="Crop / hide area"
-                                      aria-label={`Crop or hide area on page ${page.pageNumber}`}
-                                    >
-                                      <Crop className="h-4 w-4" />
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => deletePageAt(index)}
-                                      disabled={pages.length <= 1}
-                                      className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 bg-white text-red-600 transition-all hover:bg-red-50 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
-                                      title="Remove page from split plan"
-                                      aria-label={`Remove page ${page.pageNumber} from split plan`}
-                                    >
-                                      <Trash2 className="h-4 w-4" />
-                                    </button>
-                                  </div>
-                                </div>
-                                {(rotation !== 0 || pageWhiteouts.length > 0) && (
-                                  <div className="absolute bottom-3 right-3 flex gap-1">
-                                    {rotation !== 0 && (
-                                      <span className="rounded border border-slate-300 bg-white px-2 py-0.5 text-xs font-semibold text-slate-700 shadow-sm">
-                                        {rotation}°
-                                      </span>
-                                    )}
-                                    {pageWhiteouts.length > 0 && (
-                                      <span className="rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-800 shadow-sm">
-                                        {pageWhiteouts.length} crop{pageWhiteouts.length === 1 ? "" : "s"}
-                                      </span>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
                               <div className="border-t border-slate-200 bg-slate-50 p-3">
                                 <div className="flex items-center justify-between gap-2">
                                   <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -1629,6 +1846,7 @@ const AddPage: React.FC = () => {
                       })}
                     </div>
                   </DocumentComp>
+                  </>
                 ) : (
                   <div className="flex min-h-[180px] items-center justify-center gap-2 text-sm text-slate-500">
                     <LoadingSpinner size="sm" />
@@ -1659,7 +1877,7 @@ const AddPage: React.FC = () => {
                 </div>
                 <div className="mt-2 flex items-center justify-between">
                   <span className="font-medium text-slate-800">Text source</span>
-                  <span className="text-slate-500">{pdfTextSource === "txt" ? "TXT" : pdfTextSource === "browser" ? "Browser" : pdfTextSource === "server" ? "Server" : "None"}</span>
+                  <span className="text-slate-500">{pdfTextSource === "txt" ? "TXT" : pdfTextSource === "browser" ? "Browser" : pdfTextSource === "server" ? "Server" : pdfTextSource === "deferred" ? "TXT needed" : "None"}</span>
                 </div>
               </div>
               <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
@@ -1667,7 +1885,7 @@ const AddPage: React.FC = () => {
                   <div>
                     <p className="text-sm font-semibold text-amber-950">Extracted .txt</p>
                     <p className="mt-1 text-xs leading-5 text-amber-800">
-                      Upload text from iLovePDF/OCR output when the PDF has no readable text layer.
+                      Upload text from iLovePDF, ihatepdf.cv/extract-text, or OCR output when the PDF has no readable text layer.
                     </p>
                   </div>
                   {manualTextBusy && <Loader2 className="h-4 w-4 flex-shrink-0 animate-spin text-amber-700" />}
@@ -1916,7 +2134,7 @@ const AddPage: React.FC = () => {
         </div>
       )}
 
-      {hoverPreview && DocumentComp && PageComp && pdfFile && (
+      {hoverPreview && DocumentComp && PageComp && pdfDocumentSource && (
         <div className="pointer-events-none fixed inset-y-4 right-4 z-40 hidden items-center lg:flex">
           <div className="flex h-full max-h-[calc(100vh-2rem)] w-[460px] flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-950/95 shadow-2xl backdrop-blur">
             <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
@@ -1929,7 +2147,7 @@ const AddPage: React.FC = () => {
               </span>
             </div>
             <div className="flex flex-1 items-center justify-center overflow-auto p-3">
-              <DocumentComp file={pdfFile}>
+              <DocumentComp file={pdfDocumentSource}>
                 <div className="relative inline-block rounded bg-white p-2">
                   <PageComp
                     pageNumber={hoverPreview.pageNumber}
@@ -1962,7 +2180,7 @@ const AddPage: React.FC = () => {
         </div>
       )}
 
-      {previewPage && previewPosition !== null && DocumentComp && PageComp && pdfFile && (
+      {previewPage && previewPosition !== null && DocumentComp && PageComp && pdfDocumentSource && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm sm:p-6"
           onClick={() => {
@@ -2049,7 +2267,7 @@ const AddPage: React.FC = () => {
 
               <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto">
                 <div className="rounded-lg bg-white p-3 shadow-xl sm:p-4">
-                  <DocumentComp file={pdfFile}>
+                  <DocumentComp file={pdfDocumentSource}>
                     <div className="relative inline-block" ref={previewSurfaceRef}>
                       <PageComp
                         key={`preview-${previewPage.pageNumber}-${rotations[previewPage.pageNumber] || 0}`}
