@@ -37,3 +37,7 @@ video,
 canvas {
   max-width: 100%;
 }
+
+.react-pdf__Page canvas {
+  height: auto !important;
+}

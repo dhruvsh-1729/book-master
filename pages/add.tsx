@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/router";
 import {
   AlertCircle,
@@ -25,7 +25,20 @@ import {
 type ExtractedPage = {
   pageNumber: number;
   text: string;
-  thumbnailDataUrl: string;
+  thumbnailDataUrl?: string;
+  error?: string;
+};
+
+type PageTextMap = Record<number, string>;
+
+type PdfExtractionResponse = {
+  pageCount: number;
+  pages: ExtractedPage[];
+  text?: string;
+  hasTextLayer: boolean;
+  manualTextRecommended: boolean;
+  pageErrors?: Array<{ pageNumber: number; error: string }>;
+  source?: "server" | "browser";
 };
 
 type AddPromptTemplateView = {
@@ -92,79 +105,248 @@ const fileSize = (bytes: number) => {
   return `${(bytes / Math.pow(1024, index)).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
 };
 
-const parsePdf = async (file: File) => {
-  const pdfjs = await import("pdfjs-dist/webpack.mjs");
+const PAGE_MARKER_RE = /^\s*(?:[-=_*#]{2,}\s*)?(?:page|pg|p\.)\s*[:#-]?\s*(\d{1,5})(?:\s*(?:[-=_*#]{2,}|\/\s*\d+))?\s*$/i;
+const INLINE_PAGE_MARKER_RE = /---\s*Page\s+(\d{1,5})\s*---/gi;
 
+const normalizePdfText = (value: string) =>
+  value
+    .replace(/\u0000/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+
+const hasUsefulText = (value: string) => {
+  const letters = (value.match(/\p{L}/gu) || value.match(/[A-Za-z]/g) || []).length;
+  return letters >= 40;
+};
+
+const parseExtractedTextFile = (raw: string): { pageTextMap: PageTextMap; pageCount: number; mode: "markers" | "page-breaks" | "single" } => {
+  const normalized = raw.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const inlineMatches = Array.from(normalized.matchAll(INLINE_PAGE_MARKER_RE));
+
+  if (inlineMatches.length) {
+    const pageTextMap: PageTextMap = {};
+    inlineMatches.forEach((match, index) => {
+      const pageNumber = Number.parseInt(match[1], 10);
+      const start = (match.index || 0) + match[0].length;
+      const end = index + 1 < inlineMatches.length ? inlineMatches[index + 1].index || normalized.length : normalized.length;
+      if (Number.isFinite(pageNumber) && pageNumber > 0) {
+        pageTextMap[pageNumber] = normalizePdfText(normalized.slice(start, end));
+      }
+    });
+    return { pageTextMap, pageCount: Object.keys(pageTextMap).length, mode: "markers" };
+  }
+
+  const lines = normalized.split("\n");
+  const byPage: Record<number, string[]> = {};
+  let currentPage: number | null = null;
+
+  for (const line of lines) {
+    const marker = line.length <= 80 ? line.match(PAGE_MARKER_RE) : null;
+    if (marker) {
+      const pageNumber = Number.parseInt(marker[1], 10);
+      currentPage = Number.isFinite(pageNumber) && pageNumber > 0 ? pageNumber : null;
+      if (currentPage !== null && !byPage[currentPage]) byPage[currentPage] = [];
+      continue;
+    }
+
+    if (currentPage !== null) {
+      byPage[currentPage].push(line);
+    }
+  }
+
+  if (Object.keys(byPage).length) {
+    const pageTextMap: PageTextMap = {};
+    Object.entries(byPage).forEach(([page, pageLines]) => {
+      pageTextMap[Number(page)] = normalizePdfText(pageLines.join("\n"));
+    });
+    return { pageTextMap, pageCount: Object.keys(pageTextMap).length, mode: "markers" };
+  }
+
+  const pageBreakParts = normalized
+    .split(/\f+/g)
+    .map((part) => normalizePdfText(part))
+    .filter(Boolean);
+  if (pageBreakParts.length > 1) {
+    const pageTextMap: PageTextMap = {};
+    pageBreakParts.forEach((text, index) => {
+      pageTextMap[index + 1] = text;
+    });
+    return { pageTextMap, pageCount: pageBreakParts.length, mode: "page-breaks" };
+  }
+
+  const singleText = normalizePdfText(normalized);
+  return { pageTextMap: singleText ? { 1: singleText } : {}, pageCount: singleText ? 1 : 0, mode: "single" };
+};
+
+const ensurePageList = (pageCount: number, sourcePages: ExtractedPage[] = []) => {
+  const byPage = new Map(sourcePages.map((page) => [page.pageNumber, page]));
+  return Array.from({ length: Math.max(0, pageCount) }, (_, index) => {
+    const pageNumber = index + 1;
+    const existing = byPage.get(pageNumber);
+    return {
+      pageNumber,
+      text: existing?.text || "",
+      thumbnailDataUrl: existing?.thumbnailDataUrl || "",
+      error: existing?.error,
+    };
+  });
+};
+
+const getSectionsFromPages = (sourcePages: ExtractedPage[], cuts: Set<number>) => {
+  if (!sourcePages.length) return [] as ExtractedPage[][];
+  const sortedCuts = Array.from(cuts)
+    .filter((position) => position >= 0 && position < sourcePages.length - 1)
+    .sort((a, b) => a - b);
+  const sections: ExtractedPage[][] = [];
+  let start = 0;
+  for (const cut of sortedCuts) {
+    sections.push(sourcePages.slice(start, cut + 1));
+    start = cut + 1;
+  }
+  sections.push(sourcePages.slice(start));
+  return sections.filter((section) => section.length);
+};
+
+const sectionToExtractedText = (chunk: ExtractedPage[]) =>
+  chunk
+    .map((page) => `--- Page ${page.pageNumber} ---\n${page.text || ""}`)
+    .join("\n\n")
+    .trim();
+
+const renderCoverFromPdf = async (file: File) => {
+  const pdfjs = await import("pdfjs-dist/webpack.mjs");
   const data = new Uint8Array(await file.arrayBuffer());
   const task = pdfjs.getDocument({ data });
   const pdf = await task.promise;
-  const pages: ExtractedPage[] = [];
   let coverDataUrl = "";
   let coverBlob: Blob | null = null;
 
   try {
-    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-      const page = await pdf.getPage(pageNumber);
-      const baseViewport = page.getViewport({ scale: 1 });
-      let thumbnailDataUrl = "";
+    const page = await pdf.getPage(1);
+    const baseViewport = page.getViewport({ scale: 1 });
+    const scale = Math.min(1.8, Math.max(0.8, 760 / baseViewport.width));
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d");
+    if (context) {
+      canvas.width = Math.floor(viewport.width);
+      canvas.height = Math.floor(viewport.height);
+      await page.render({ canvasContext: context, viewport }).promise;
+      coverDataUrl = canvas.toDataURL("image/webp", 0.72);
+      coverBlob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/webp", 0.72));
+    }
+    page.cleanup?.();
+  } finally {
+    pdf?.cleanup?.();
+    task?.destroy?.();
+  }
 
-      if (pageNumber === 1) {
-        const scale = Math.min(1.8, Math.max(0.8, 760 / baseViewport.width));
-        const viewport = page.getViewport({ scale });
-        const canvas = document.createElement("canvas");
-        const context = canvas.getContext("2d");
-        if (context) {
-          canvas.width = Math.floor(viewport.width);
-          canvas.height = Math.floor(viewport.height);
-          await page.render({ canvasContext: context, viewport }).promise;
-          coverDataUrl = canvas.toDataURL("image/webp", 0.72);
-          coverBlob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/webp", 0.72));
-        }
-      }
+  return { coverDataUrl, coverBlob };
+};
 
-      const thumbScale = Math.min(0.75, Math.max(0.28, 220 / baseViewport.width));
-      const thumbViewport = page.getViewport({ scale: thumbScale });
-      const thumbCanvas = document.createElement("canvas");
-      const thumbContext = thumbCanvas.getContext("2d");
-      if (thumbContext) {
-        thumbCanvas.width = Math.floor(thumbViewport.width);
-        thumbCanvas.height = Math.floor(thumbViewport.height);
-        await page.render({ canvasContext: thumbContext, viewport: thumbViewport }).promise;
-        thumbnailDataUrl = thumbCanvas.toDataURL("image/webp", 0.58);
-      }
+const extractPdfTextOnServer = async (file: File): Promise<PdfExtractionResponse> => {
+  const formData = new FormData();
+  formData.append("pdf", file);
+  const response = await fetch("/api/add/extract-pdf", { method: "POST", body: formData });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data?.error || `Server PDF extraction failed (${response.status}).`);
+  }
 
-      const textContent = await page.getTextContent();
-      const text = textContent.items
-        .map((item: any) => ("str" in item ? item.str : ""))
-        .join(" ")
-        .replace(/\s+/g, " ")
-        .trim();
-      pages.push({ pageNumber, text, thumbnailDataUrl });
-      if (typeof page.cleanup === "function") {
-        page.cleanup();
+  const pageCount = Number(data.pageCount) || 0;
+  const pages = ensurePageList(pageCount, Array.isArray(data.pages) ? data.pages : []);
+  return {
+    pageCount,
+    pages,
+    text: typeof data.text === "string" ? data.text : "",
+    hasTextLayer: Boolean(data.hasTextLayer),
+    manualTextRecommended: Boolean(data.manualTextRecommended),
+    pageErrors: Array.isArray(data.pageErrors) ? data.pageErrors : [],
+    source: "server",
+  };
+};
+
+const extractPdfTextInBrowser = async (file: File): Promise<PdfExtractionResponse> => {
+  const pdfjs = await import("pdfjs-dist/webpack.mjs");
+  const data = new Uint8Array(await file.arrayBuffer());
+  const task = pdfjs.getDocument({ data });
+  const pdf = await task.promise;
+  const pageCount = Number(pdf.numPages) || 0;
+  const pages: ExtractedPage[] = [];
+  const pageErrors: Array<{ pageNumber: number; error: string }> = [];
+
+  try {
+    for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+      let page: any | null = null;
+      try {
+        page = await pdf.getPage(pageNumber);
+        const textContent = await page.getTextContent();
+        const text = normalizePdfText(
+          (textContent.items || [])
+            .map((item: any) => {
+              const str = typeof item?.str === "string" ? item.str : "";
+              return item?.hasEOL ? `${str}\n` : `${str} `;
+            })
+            .join("")
+        );
+        pages.push({ pageNumber, text });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Failed to extract page text.";
+        pageErrors.push({ pageNumber, error: message });
+        pages.push({ pageNumber, text: "", error: message });
+      } finally {
+        page?.cleanup?.();
       }
     }
   } finally {
-    try {
-      if (typeof pdf.cleanup === "function") {
-        await pdf.cleanup();
-      }
-    } catch (error) {
-      console.warn("PDF cleanup skipped", error);
-    }
-
-    try {
-      if (typeof task.destroy === "function") {
-        await task.destroy();
-      } else if (typeof pdf.destroy === "function") {
-        await pdf.destroy();
-      }
-    } catch (error) {
-      console.warn("PDF worker cleanup skipped", error);
-    }
+    pdf?.cleanup?.();
+    task?.destroy?.();
   }
 
-  return { pages, coverDataUrl, coverBlob };
+  const text = pages
+    .map((page) => (page.text ? `--- Page ${page.pageNumber} ---\n${page.text}` : ""))
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+
+  return {
+    pageCount,
+    pages,
+    text,
+    hasTextLayer: hasUsefulText(text),
+    manualTextRecommended: !hasUsefulText(text),
+    pageErrors,
+    source: "browser",
+  };
+};
+
+const parsePdf = async (file: File) => {
+  const [extractionResult, coverResult] = await Promise.allSettled([
+    extractPdfTextOnServer(file).catch(async (error) => {
+      console.warn("Server PDF extraction failed; using browser fallback", error);
+      return extractPdfTextInBrowser(file);
+    }),
+    renderCoverFromPdf(file),
+  ]);
+
+  if (extractionResult.status === "rejected") throw extractionResult.reason;
+
+  const cover =
+    coverResult.status === "fulfilled"
+      ? coverResult.value
+      : { coverDataUrl: "", coverBlob: null as Blob | null };
+
+  if (coverResult.status === "rejected") {
+    console.warn("PDF cover rendering skipped", coverResult.reason);
+  }
+
+  return {
+    ...extractionResult.value,
+    pages: ensurePageList(extractionResult.value.pageCount, extractionResult.value.pages),
+    coverDataUrl: cover.coverDataUrl,
+    coverBlob: cover.coverBlob,
+  };
 };
 
 const buildDraftsFromSections = (sections: ExtractedPage[][]): DraftTransaction[] => {
@@ -172,10 +354,7 @@ const buildDraftsFromSections = (sections: ExtractedPage[][]): DraftTransaction[
     const pageStart = chunk[0]?.pageNumber || index + 1;
     const pageEnd = chunk[chunk.length - 1]?.pageNumber || pageStart;
     const pageNo = pageStart === pageEnd ? String(pageStart) : `${pageStart}-${pageEnd}`;
-    const extractedText = chunk
-      .map((page) => `--- Page ${page.pageNumber} ---\n${page.text || ""}`)
-      .join("\n\n")
-      .trim();
+    const extractedText = sectionToExtractedText(chunk);
 
     return {
       id: createLocalId(),
@@ -270,8 +449,12 @@ const SubjectPill = ({
 
 const AddPage: React.FC = () => {
   const router = useRouter();
+  const manualTextInputRef = useRef<HTMLInputElement | null>(null);
+  const [isClient, setIsClient] = useState(false);
+  const [reactPdf, setReactPdf] = useState<{ Document: any; Page: any } | null>(null);
   const [bookForm, setBookForm] = useState<BookFormData>(initialBookForm);
   const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [pdfPageCount, setPdfPageCount] = useState(0);
   const [createdBook, setCreatedBook] = useState<BookMaster | null>(null);
   const [pages, setPages] = useState<ExtractedPage[]>([]);
   const [coverPreview, setCoverPreview] = useState("");
@@ -286,26 +469,39 @@ const AddPage: React.FC = () => {
   const [promptsSaving, setPromptsSaving] = useState(false);
   const [showPrompts, setShowPrompts] = useState(false);
   const [promptError, setPromptError] = useState("");
+  const [manualTextBusy, setManualTextBusy] = useState(false);
+  const [manualTextInfo, setManualTextInfo] = useState<{ fileName: string; pageCount: number; mode: string } | null>(null);
+  const [pdfTextSource, setPdfTextSource] = useState<"server" | "browser" | "txt" | null>(null);
+  const DocumentComp = reactPdf?.Document;
+  const PageComp = reactPdf?.Page;
 
   const selectedForReview = useMemo(
     () => drafts.filter((draft) => draft.subjectReviewStatus === "needs_review").length,
     [drafts]
   );
 
-  const manualSections = useMemo(() => {
-    if (!pages.length) return [] as ExtractedPage[][];
-    const cuts = Array.from(splitIndices)
-      .filter((position) => position >= 0 && position < pages.length - 1)
-      .sort((a, b) => a - b);
-    const sections: ExtractedPage[][] = [];
-    let start = 0;
-    for (const cut of cuts) {
-      sections.push(pages.slice(start, cut + 1));
-      start = cut + 1;
-    }
-    sections.push(pages.slice(start));
-    return sections.filter((section) => section.length);
-  }, [pages, splitIndices]);
+  const manualSections = useMemo(() => getSectionsFromPages(pages, splitIndices), [pages, splitIndices]);
+
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isClient) return;
+    let mounted = true;
+    import("react-pdf")
+      .then((mod) => {
+        if (!mounted) return;
+        mod.pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${mod.pdfjs.version}/build/pdf.worker.min.mjs`;
+        setReactPdf({ Document: mod.Document, Page: mod.Page });
+      })
+      .catch((error) => {
+        console.error("Failed to load PDF preview renderer", error);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [isClient]);
 
   useEffect(() => {
     const loadPrompts = async () => {
@@ -329,6 +525,28 @@ const AddPage: React.FC = () => {
     const { name, value } = event.target;
     setBookForm((prev) => ({ ...prev, [name]: value }));
   };
+
+  const handlePdfFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const nextFile = event.target.files?.[0] || null;
+    setPdfFile(nextFile);
+    setPdfPageCount(0);
+    setPages([]);
+    setDrafts([]);
+    setSplitIndices(new Set());
+    setCoverPreview("");
+    setManualTextInfo(null);
+    setPdfTextSource(null);
+  };
+
+  const handleDocumentLoadSuccess = useCallback(
+    ({ numPages }: { numPages: number }) => {
+      setPdfPageCount(numPages);
+      if (createdBook) {
+        setPages((prev) => ensurePageList(numPages, prev));
+      }
+    },
+    [createdBook]
+  );
 
   const updateEditor = (index: number, field: keyof BookEditorFormRow, value: string) => {
     setBookForm((prev) => {
@@ -396,6 +614,85 @@ const AddPage: React.FC = () => {
     }
   };
 
+  const applyManualExtractedText = useCallback(
+    async (uploaded: File) => {
+      if (manualTextBusy) return;
+
+      const knownPageCount = Math.max(pdfPageCount, pages.length);
+      if (!knownPageCount) {
+        setAlert({ type: "error", message: "Load and extract a PDF before uploading extracted text." });
+        return;
+      }
+
+      setManualTextBusy(true);
+      try {
+        const raw = await uploaded.text();
+        const parsed = parseExtractedTextFile(raw);
+        const pageNumbers = Object.keys(parsed.pageTextMap).map((page) => Number(page));
+        const maxUploadedPage = pageNumbers.length ? Math.max(...pageNumbers) : 0;
+        if (!parsed.pageCount || !maxUploadedPage) {
+          throw new Error('No text found in the .txt file. Use page markers like "--- Page 1 ---" when possible.');
+        }
+
+        const targetPageCount = Math.max(knownPageCount, maxUploadedPage);
+        const missingPages: number[] = [];
+        const nextPages = ensurePageList(targetPageCount, pages).map((page) => {
+          if (Object.prototype.hasOwnProperty.call(parsed.pageTextMap, page.pageNumber)) {
+            return { ...page, text: parsed.pageTextMap[page.pageNumber], error: undefined };
+          }
+          if (page.pageNumber <= knownPageCount) missingPages.push(page.pageNumber);
+          return page;
+        });
+
+        setPages(nextPages);
+        setPdfPageCount(targetPageCount);
+        setPdfTextSource("txt");
+        setManualTextInfo({ fileName: uploaded.name, pageCount: parsed.pageCount, mode: parsed.mode });
+
+        if (drafts.length) {
+          const nextSections = getSectionsFromPages(nextPages, splitIndices);
+          setDrafts((prev) =>
+            prev.map((draft, index) => {
+              const section = nextSections[index];
+              if (!section) return draft;
+              const pageStart = section[0]?.pageNumber || draft.pageStart;
+              const pageEnd = section[section.length - 1]?.pageNumber || pageStart;
+              return {
+                ...draft,
+                pageStart,
+                pageEnd,
+                pageNo: pageStart === pageEnd ? String(pageStart) : `${pageStart}-${pageEnd}`,
+                extractedText: sectionToExtractedText(section),
+              };
+            })
+          );
+        }
+
+        const warnings: string[] = [];
+        if (parsed.mode === "single" && knownPageCount > 1) {
+          warnings.push("The file had no page markers, so text was applied to page 1 only.");
+        }
+        if (missingPages.length) {
+          const preview = missingPages.slice(0, 12).join(", ");
+          warnings.push(
+            `Missing text for ${missingPages.length} page${missingPages.length === 1 ? "" : "s"}: ${preview}${missingPages.length > 12 ? "..." : ""}.`
+          );
+        }
+
+        setAlert({
+          type: warnings.length ? "warning" : "success",
+          message: `Applied extracted text from ${uploaded.name} to ${parsed.pageCount} page${parsed.pageCount === 1 ? "" : "s"}.${warnings.length ? ` ${warnings.join(" ")}` : ""}`,
+        });
+      } catch (error: any) {
+        setAlert({ type: "error", message: error?.message || "Failed to apply extracted text file." });
+      } finally {
+        setManualTextBusy(false);
+        if (manualTextInputRef.current) manualTextInputRef.current.value = "";
+      }
+    },
+    [drafts.length, manualTextBusy, pages, pdfPageCount, splitIndices]
+  );
+
   const createBookAndExtract = async () => {
     if (!bookForm.libraryNumber.trim() || !bookForm.bookName.trim()) {
       setAlert({ type: "error", message: "Library number and book name are required." });
@@ -426,6 +723,9 @@ const AddPage: React.FC = () => {
       setBusyMessage("Extracting PDF text and cover");
       const parsed = await parsePdf(pdfFile);
       setPages(parsed.pages);
+      setPdfPageCount(parsed.pageCount || parsed.pages.length);
+      setPdfTextSource(parsed.source || null);
+      setManualTextInfo(null);
       setCoverPreview(parsed.coverDataUrl);
 
       setBusyMessage("Saving detected cover");
@@ -448,9 +748,14 @@ const AddPage: React.FC = () => {
 
       setSplitIndices(new Set());
       setDrafts([]);
+      const extractedPageCount = parsed.pages.filter((page) => page.text.trim()).length;
+      const extractionSource = parsed.source === "browser" ? "locally in the browser" : "on the Node server";
+      const pageErrorCount = parsed.pageErrors?.length || 0;
       setAlert({
-        type: "success",
-        message: `Book saved. ${parsed.pages.length} page(s) extracted. Review the pages and add split cuts before creating transactions.`,
+        type: parsed.manualTextRecommended || pageErrorCount ? "warning" : "success",
+        message: parsed.manualTextRecommended
+          ? `Book saved and ${parsed.pages.length} page(s) loaded. No usable PDF text layer was found ${extractionSource}; upload the extracted .txt file before creating transaction drafts.`
+          : `Book saved. Text was extracted ${extractionSource} for ${extractedPageCount}/${parsed.pages.length} page(s). Review the pages and add split cuts before creating transactions.${pageErrorCount ? ` ${pageErrorCount} page(s) had text extraction warnings.` : ""}`,
       });
     } catch (error: any) {
       setAlert({ type: "error", message: error?.message || "Failed to prepare PDF import." });
@@ -848,7 +1153,7 @@ const AddPage: React.FC = () => {
                 accept="application/pdf,.pdf"
                 className="sr-only"
                 disabled={Boolean(createdBook)}
-                onChange={(event) => setPdfFile(event.target.files?.[0] || null)}
+                onChange={handlePdfFileChange}
               />
             </label>
             {coverPreview && (
@@ -906,70 +1211,101 @@ const AddPage: React.FC = () => {
           <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
             <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
               {pages.length ? (
-                <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                  {pages.map((page, index) => {
-                    const isSplit = splitIndices.has(index);
-                    const isLast = index === pages.length - 1;
-                    return (
-                      <div key={page.pageNumber} className="group relative overflow-visible">
-                        <div className="relative overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm transition-all duration-200 hover:-translate-y-1 hover:border-slate-300 hover:shadow-md">
-                          <div className="relative flex h-[280px] items-center justify-center overflow-hidden bg-slate-50 p-4">
-                            {page.thumbnailDataUrl ? (
-                              <img
-                                src={page.thumbnailDataUrl}
-                                alt={`PDF page ${page.pageNumber}`}
-                                className="max-h-[240px] max-w-full rounded border border-slate-200 bg-white object-contain p-1 shadow-sm"
-                              />
-                            ) : (
-                              <div className="flex h-[220px] w-[160px] items-center justify-center rounded border border-dashed border-slate-300 bg-white text-sm font-semibold text-slate-400">
-                                Page {page.pageNumber}
-                              </div>
-                            )}
-                          </div>
-                          <div className="border-t border-slate-200 bg-slate-50 p-3">
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="flex min-w-0 flex-1 items-center gap-2">
-                                <FileText className="h-4 w-4 flex-shrink-0 text-slate-400" />
-                                <span className="truncate rounded bg-red-50 px-2 py-1 text-xs font-normal text-red-700">
-                                  {pdfFile?.name || "PDF"}
-                                </span>
-                              </div>
-                              <span className="flex h-6 min-w-[24px] flex-shrink-0 items-center justify-center rounded bg-slate-950 px-2 text-xs font-semibold text-white">
-                                {page.pageNumber}
-                              </span>
-                            </div>
-                            <p className="mt-2 line-clamp-2 min-h-[2.5rem] text-xs leading-5 text-slate-500">
-                              {page.text || "No embedded text detected on this page."}
-                            </p>
-                          </div>
-                        </div>
-
-                        {!isLast && (
-                          <div className="absolute -bottom-5 left-1/2 z-10 -translate-x-1/2 sm:-right-4 sm:bottom-auto sm:left-auto sm:top-1/2 sm:-translate-y-1/2 sm:translate-x-0">
-                            <button
-                              type="button"
-                              onClick={() => toggleSplit(index)}
-                              className={`flex h-10 w-10 items-center justify-center rounded-full border-2 text-lg shadow-sm transition-all duration-200 hover:scale-110 active:scale-95 ${
-                                isSplit
-                                  ? "border-slate-950 bg-slate-950 text-white shadow-md"
-                                  : "border-slate-300 bg-white text-slate-600 hover:border-slate-400 hover:bg-slate-50"
-                              }`}
-                              title={isSplit ? "Remove split" : "Split after this page"}
-                              aria-label={isSplit ? `Remove split after page ${page.pageNumber}` : `Split after page ${page.pageNumber}`}
-                            >
-                              <Scissors className="h-5 w-5" />
-                            </button>
-                            {isSplit && (
-                              <div className="absolute left-1/2 top-full mt-2 -translate-x-1/2 whitespace-nowrap rounded border border-slate-950 bg-slate-950 px-2.5 py-1 text-xs font-medium text-white shadow-sm">
-                                Split here
-                              </div>
-                            )}
-                          </div>
-                        )}
+                isClient && DocumentComp && PageComp && pdfFile ? (
+                  <DocumentComp
+                    file={pdfFile}
+                    onLoadSuccess={handleDocumentLoadSuccess}
+                    loading={
+                      <div className="flex min-h-[180px] items-center justify-center gap-2 text-sm text-slate-500">
+                        <LoadingSpinner size="sm" />
+                        Loading PDF pages
                       </div>
-                    );
-                  })}
-                </div>
+                    }
+                    error={
+                      <div className="flex min-h-[180px] items-center justify-center rounded-lg border border-red-200 bg-red-50 p-4 text-sm font-medium text-red-700">
+                        Unable to render PDF pages in this browser.
+                      </div>
+                    }
+                  >
+                    <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                      {pages.map((page, index) => {
+                        const isSplit = splitIndices.has(index);
+                        const isLast = index === pages.length - 1;
+                        return (
+                          <div key={page.pageNumber} className="group relative overflow-visible">
+                            <div className="relative overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm transition-all duration-200 hover:-translate-y-1 hover:border-slate-300 hover:shadow-md">
+                              <div className="relative flex h-[280px] items-center justify-center overflow-hidden bg-slate-50 p-4">
+                                <div className="flex max-h-[240px] max-w-full items-center justify-center overflow-hidden rounded border border-slate-200 bg-white p-1 shadow-sm">
+                                  <PageComp
+                                    pageNumber={page.pageNumber}
+                                    width={170}
+                                    renderMode="canvas"
+                                    renderAnnotationLayer={false}
+                                    renderTextLayer={false}
+                                    loading={
+                                      <div className="flex h-[220px] w-[160px] items-center justify-center text-xs font-semibold text-slate-400">
+                                        Page {page.pageNumber}
+                                      </div>
+                                    }
+                                    error={
+                                      <div className="flex h-[220px] w-[160px] items-center justify-center text-center text-xs font-semibold text-red-500">
+                                        Page {page.pageNumber} failed
+                                      </div>
+                                    }
+                                  />
+                                </div>
+                              </div>
+                              <div className="border-t border-slate-200 bg-slate-50 p-3">
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="flex min-w-0 flex-1 items-center gap-2">
+                                    <FileText className="h-4 w-4 flex-shrink-0 text-slate-400" />
+                                    <span className="truncate rounded bg-red-50 px-2 py-1 text-xs font-normal text-red-700">
+                                      {pdfFile?.name || "PDF"}
+                                    </span>
+                                  </div>
+                                  <span className="flex h-6 min-w-[24px] flex-shrink-0 items-center justify-center rounded bg-slate-950 px-2 text-xs font-semibold text-white">
+                                    {page.pageNumber}
+                                  </span>
+                                </div>
+                                <p className="mt-2 line-clamp-2 min-h-[2.5rem] text-xs leading-5 text-slate-500">
+                                  {page.text || page.error || "No embedded text detected on this page."}
+                                </p>
+                              </div>
+                            </div>
+
+                            {!isLast && (
+                              <div className="absolute -bottom-5 left-1/2 z-10 -translate-x-1/2 sm:-right-4 sm:bottom-auto sm:left-auto sm:top-1/2 sm:-translate-y-1/2 sm:translate-x-0">
+                                <button
+                                  type="button"
+                                  onClick={() => toggleSplit(index)}
+                                  className={`flex h-10 w-10 items-center justify-center rounded-full border-2 text-lg shadow-sm transition-all duration-200 hover:scale-110 active:scale-95 ${
+                                    isSplit
+                                      ? "border-slate-950 bg-slate-950 text-white shadow-md"
+                                      : "border-slate-300 bg-white text-slate-600 hover:border-slate-400 hover:bg-slate-50"
+                                  }`}
+                                  title={isSplit ? "Remove split" : "Split after this page"}
+                                  aria-label={isSplit ? `Remove split after page ${page.pageNumber}` : `Split after page ${page.pageNumber}`}
+                                >
+                                  <Scissors className="h-5 w-5" />
+                                </button>
+                                {isSplit && (
+                                  <div className="absolute left-1/2 top-full mt-2 -translate-x-1/2 whitespace-nowrap rounded border border-slate-950 bg-slate-950 px-2.5 py-1 text-xs font-medium text-white shadow-sm">
+                                    Split here
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </DocumentComp>
+                ) : (
+                  <div className="flex min-h-[180px] items-center justify-center gap-2 text-sm text-slate-500">
+                    <LoadingSpinner size="sm" />
+                    Loading PDF renderer
+                  </div>
+                )
               ) : (
                 <div className="flex min-h-[180px] flex-col items-center justify-center gap-3 text-center text-slate-500">
                   <Plus className="h-10 w-10 text-slate-400" />
@@ -992,6 +1328,48 @@ const AddPage: React.FC = () => {
                   <span className="font-medium text-slate-800">Manual cuts</span>
                   <span className="text-slate-500">{splitIndices.size}</span>
                 </div>
+                <div className="mt-2 flex items-center justify-between">
+                  <span className="font-medium text-slate-800">Text source</span>
+                  <span className="text-slate-500">{pdfTextSource === "txt" ? "TXT" : pdfTextSource === "browser" ? "Browser" : pdfTextSource === "server" ? "Server" : "None"}</span>
+                </div>
+              </div>
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-amber-950">Extracted .txt</p>
+                    <p className="mt-1 text-xs leading-5 text-amber-800">
+                      Upload text from iLovePDF/OCR output when the PDF has no readable text layer.
+                    </p>
+                  </div>
+                  {manualTextBusy && <Loader2 className="h-4 w-4 flex-shrink-0 animate-spin text-amber-700" />}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => manualTextInputRef.current?.click()}
+                  disabled={manualTextBusy || !pages.length}
+                  className="mt-3 inline-flex w-full items-center justify-center rounded-md border border-amber-300 bg-white px-3 py-2 text-sm font-semibold text-amber-900 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <UploadCloud className="mr-2 h-4 w-4" />
+                  {manualTextBusy ? "Applying text" : "Upload .txt"}
+                </button>
+                <input
+                  ref={manualTextInputRef}
+                  type="file"
+                  accept=".txt,text/plain"
+                  className="sr-only"
+                  onChange={(event) => {
+                    const uploaded = event.target.files?.[0];
+                    if (uploaded) void applyManualExtractedText(uploaded);
+                  }}
+                />
+                {manualTextInfo && (
+                  <p className="mt-2 text-xs leading-5 text-amber-800">
+                    {manualTextInfo.fileName}: {manualTextInfo.pageCount} page{manualTextInfo.pageCount === 1 ? "" : "s"} ({manualTextInfo.mode})
+                  </p>
+                )}
+                <p className="mt-2 text-xs leading-5 text-amber-800">
+                  Best format: <span className="font-mono">--- Page 1 ---</span>. Page-break separated TXT also works.
+                </p>
               </div>
               <div className="max-h-[320px] space-y-2 overflow-auto rounded-lg border border-slate-200 bg-slate-50 p-3">
                 {manualSections.map((section, index) => {

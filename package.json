@@ -14,6 +14,7 @@
     "migrate:subjects:lowercase": "node scripts/migrate-subjects-lowercase.js"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^1.0.2",
     "@prisma/client": "^6.15.0",
     "@types/react-select": "^5.0.1",
     "bcryptjs": "^3.0.2",
@@ -29,6 +30,7 @@
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-easy-crop": "^5.2.0",
+    "react-pdf": "^10.4.1",
     "react-select": "^5.10.2",
     "xlsx": "^0.18.5"
   },
